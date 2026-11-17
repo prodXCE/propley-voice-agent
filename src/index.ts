@@ -237,8 +237,9 @@ export default defineAgent({
 
     session.on(voice.AgentSessionEventTypes.UserStateChanged, (ev) => {
       cancelFiller();
-      if (FILLER_DELAY_MS <= 0) return;
       if (ev.oldState !== "speaking" || ev.newState === "speaking") return;
+      bridge.prefetchPageContext();
+      if (FILLER_DELAY_MS <= 0) return;
 
       fillerTimer = setTimeout(() => {
         fillerTimer = null;

@@ -1,5 +1,9 @@
 import type { Room } from "@livekit/rtc-node";
 import { RPC_TIMEOUT_MS } from "./config.js";
+import { getToolSpec } from "./shared/agent-tools.js";
+
+/** How long a fetched screen snapshot may be reused without a fresh round trip. */
+const CONTEXT_REUSE_MS = 5_000;
 
 export interface ToolEnvelope {
   ok: boolean;
@@ -64,6 +68,8 @@ export class BrowserBridge {
   }
 
   async executeTool(name: string, args: Record<string, unknown>): Promise<unknown> {
+    // Read tools never change the page; anything else may, so the next LLM call must look again.
+    if (getToolSpec(name)?.kind !== "read") this.screen = null;
     try {
       const raw = await this.call("tool.execute", { name, args });
       const envelope = JSON.parse(raw) as ToolEnvelope;
@@ -74,7 +80,19 @@ export class BrowserBridge {
     }
   }
 
-  async pageContext(): Promise<string | null> {
+  private screen: { at: number; value: Promise<string | null> } | null = null;
+
+  /** Start fetching the screen now (the user just stopped talking), so the LLM call doesn't wait on it. */
+  prefetchPageContext(): void {
+    this.screen = { at: Date.now(), value: this.fetchPageContext() };
+  }
+
+  pageContext(): Promise<string | null> {
+    if (!this.screen || Date.now() - this.screen.at > CONTEXT_REUSE_MS) this.prefetchPageContext();
+    return this.screen!.value;
+  }
+
+  private async fetchPageContext(): Promise<string | null> {
     try {
       const raw = await this.call("context.get", {});
       const ctx = JSON.parse(raw) as {
@@ -126,6 +144,7 @@ export class BrowserBridge {
   }
 
   async wizardInput(text: string): Promise<WizardTurn> {
+    this.screen = null;
     try {
       const raw = await this.call("wizard.input", { text });
       const turn = JSON.parse(raw) as WizardTurn;

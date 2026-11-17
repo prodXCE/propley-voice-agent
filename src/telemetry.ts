@@ -22,15 +22,14 @@ const since = (start: number | undefined, end: number | undefined): number | und
   start && end && end >= start ? end - start : undefined;
 
 /**
- * One JSON line per agent reply (`evt: "turn"`). A user turn opens on its first final
- * transcript and closes when the agent's reply is added to the conversation.
+ * One JSON line per agent reply (`evt: "turn"`). A turn collects everything after the previous
+ * reply (filler, prefetch, transcripts, metrics) and closes when the agent's reply is added.
  */
 export class TurnRecorder {
   private metrics: TurnMetrics = {};
   private transcript = "";
   private heardLanguage: string | null = null;
   private index = 0;
-  private open = false;
 
   private userStoppedAt?: number;
   private eot?: { probability: number; threshold: number };
@@ -59,8 +58,6 @@ export class TurnRecorder {
 
   heard(transcript: string, language: string | null): void {
     // A long utterance can arrive as several finals; keep them in one turn.
-    if (!this.open) this.reset();
-    this.open = true;
     this.transcript = this.transcript ? `${this.transcript} ${transcript}` : transcript;
     this.heardLanguage = language;
   }
@@ -142,6 +139,6 @@ export class TurnRecorder {
         steps: this.steps,
       }),
     );
-    this.open = false;
+    this.reset();
   }
 }
