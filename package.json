@@ -7,7 +7,9 @@
     "build": "tsup src/index.ts --format esm --target node20 --clean --sourcemap --external @livekit/rtc-node --external @livekit/rtc-ffi-bindings",
     "dev": "npm run build && node dist/index.js dev",
     "start": "node dist/index.js start",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "bench:worker": "npm run build && LIVEKIT_AGENT_NAME=propley-bench node dist/index.js dev",
+    "bench": "node scripts/bench.mjs"
   },
   "dependencies": {
     "@livekit/agents": "1.5.1",
