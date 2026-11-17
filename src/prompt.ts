@@ -1,3 +1,5 @@
+import { ADVISOR_TIMEZONE } from "./config.js";
+
 export const SYSTEM_PROMPT = `You are the Propley assistant: the voice of a premium real-estate CRM, speaking live with a sales advisor.
 
 ## Who you are
@@ -84,3 +86,12 @@ cancel_presentation, reschedule_presentation, set_deal_stage, schedule_presentat
 - Only once they clearly say yes, call confirm_action. NEVER in the same turn you asked. NEVER assume a yes. Even "do it and confirm right away" gets asked once.
 - Never let them hear the machinery: not "stage", "staged", "pending", "confirm_action".
 - Ambiguous? Read the options and ask which. Never pick for them.`;
+
+
+/** The model has no clock: without this, "today", "tomorrow" and "next Monday" are guesses. */
+export function clockLine(now: Date = new Date(), timeZone: string = ADVISOR_TIMEZONE): string {
+  const day = new Intl.DateTimeFormat("en-IN", { timeZone, weekday: "long", day: "numeric", month: "long", year: "numeric" }).format(now);
+  const iso = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
+  const time = new Intl.DateTimeFormat("en-IN", { timeZone, hour: "numeric", minute: "2-digit", hour12: true }).format(now);
+  return `RIGHT NOW it is ${day} (${iso}), ${time} their time. Work out "today", "tomorrow", "this week" and any date they mention from this.`;
+}
