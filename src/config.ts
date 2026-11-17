@@ -61,6 +61,8 @@ export const TTS_STREAMING = bool("TTS_STREAMING", true);
 export const GEMINI_MODEL = process.env.VERTEX_MODEL ?? "gemini-2.5-flash";
 
 export const LLM_TEMPERATURE = num("LLM_TEMPERATURE", 0.5);
+/** Advisors' clock, for "today" / "tomorrow" (IANA zone). */
+export const ADVISOR_TIMEZONE = process.env.ADVISOR_TIMEZONE?.trim() || "Asia/Kolkata";
 export const VERTEX_PROJECT = process.env.VERTEX_PROJECT?.trim() ?? "";
 export const VERTEX_LOCATION = process.env.VERTEX_LOCATION?.trim() ?? "us-central1";
 

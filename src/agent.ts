@@ -4,7 +4,7 @@ import type { AudioFrame } from "@livekit/rtc-node";
 import type { BrowserBridge } from "./browser-bridge.js";
 import { DEFAULT_TTS_LANGUAGE, languageName, speaksLanguage, ttsLanguageForText } from "./language.js";
 import { LanguagePolicy } from "./language-policy.js";
-import { SYSTEM_PROMPT } from "./prompt.js";
+import { clockLine, SYSTEM_PROMPT } from "./prompt.js";
 import { isMeaningfulUtterance } from "./utterance.js";
 import { stripSelfEcho } from "./echo.js";
 import { stripGrovel, stripPlumbing } from "./grovel.js";
@@ -323,7 +323,7 @@ export class PropleyAgent extends voice.Agent {
     const spoken = this.language.language;
 
     const pageContext = await this.bridge.pageContext();
-    const instructions = [languageDirective(spoken), SYSTEM_PROMPT, pageContext]
+    const instructions = [languageDirective(spoken), SYSTEM_PROMPT, pageContext, clockLine()]
       .filter(Boolean)
       .join("\n\n");
 
