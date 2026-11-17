@@ -30,7 +30,7 @@ export function composeGreeting(
   const clients = snapshot.totalClients ?? 0;
 
   if (active > 0) {
-    const count = active === 1 ? "one live right now" : `${active} live right now`;
+    const count = active === 1 ? "one live presentation right now" : `${active} live presentations right now`;
     return `${hello} You've got ${count}. ${pick([
       "Want me to pull them up?",
       "Shall I bring them up?",

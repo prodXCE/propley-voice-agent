@@ -27,7 +27,17 @@ export function isHandoffResult(value: unknown): value is HandoffResult {
   );
 }
 
+export interface RpcTiming {
+  method: string;
+  tool?: string;
+  ms: number;
+  ok: boolean;
+}
+
 export class BrowserBridge {
+  /** Called after every RPC round trip to the browser (turn telemetry). */
+  onRpc: ((timing: RpcTiming) => void) | null = null;
+
   constructor(
     private readonly room: Room,
     private readonly identity: string,
@@ -36,12 +46,21 @@ export class BrowserBridge {
   private async call(method: string, payload: unknown): Promise<string> {
     const local = this.room.localParticipant;
     if (!local) throw new Error("agent is not connected to the room");
-    return local.performRpc({
-      destinationIdentity: this.identity,
-      method,
-      payload: JSON.stringify(payload),
-      responseTimeout: RPC_TIMEOUT_MS,
-    });
+    const started = Date.now();
+    let ok = false;
+    try {
+      const response = await local.performRpc({
+        destinationIdentity: this.identity,
+        method,
+        payload: JSON.stringify(payload),
+        responseTimeout: RPC_TIMEOUT_MS,
+      });
+      ok = true;
+      return response;
+    } finally {
+      const tool = (payload as { name?: unknown } | null)?.name;
+      this.onRpc?.({ method, ...(typeof tool === "string" ? { tool } : {}), ms: Date.now() - started, ok });
+    }
   }
 
   async executeTool(name: string, args: Record<string, unknown>): Promise<unknown> {

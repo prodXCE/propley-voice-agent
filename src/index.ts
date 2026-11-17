@@ -197,11 +197,18 @@ export default defineAgent({
 
     session.on(voice.AgentSessionEventTypes.ConversationItemAdded, (ev) => {
       if (ev.item.type === "message" && ev.item.role === "assistant") {
-        turn.said(ev.item.textContent ?? "", agent.currentLanguage);
+        turn.said(ev.item.textContent ?? "", agent.currentLanguage, ev.item.interrupted);
       }
     });
 
+    session.on(voice.AgentSessionEventTypes.EotPrediction, (ev) => {
+      turn.eotPrediction(ev.probability, ev.threshold);
+    });
+
+    bridge.onRpc = (timing) => turn.rpcDone(timing);
+
     const agent = new PropleyAgent(bridge, tts, vocabulary, VOICE_LANGUAGES);
+    agent.onStep = (step) => turn.step(step);
 
     const fillerCache = ctx.proc.userData.fillers as FillerCache;
 
@@ -249,11 +256,13 @@ export default defineAgent({
 
         console.log(`[filler] (${language}) ${filler}`);
         fillerHandle = backgroundAudio.play(frames);
+        turn.fillerStarted();
       }, FILLER_DELAY_MS);
     });
 
     session.on(voice.AgentSessionEventTypes.AgentStateChanged, (ev) => {
       if (ev.newState !== "speaking") return;
+      turn.agentSpeaking(ev.createdAt);
       cancelFiller();
 
       fillerHandle?.stop();
