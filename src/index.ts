@@ -2,6 +2,7 @@ import {
   cli,
   defineAgent,
   inference,
+  llm,
   voice,
   WorkerOptions,
   type JobContext,
@@ -48,6 +49,7 @@ import {
   VAD_ACTIVATION_THRESHOLD,
   VOICE_LANGUAGES,
   VAD_MIN_SPEECH_MS,
+  VERTEX_FALLBACK_LOCATION,
   VERTEX_LOCATION,
   VERTEX_PROJECT,
 } from "./config.js";
@@ -96,6 +98,26 @@ function buildStt(vocabulary: string[]) {
       eot_threshold: DEEPGRAM_EOT,
       ...(vocabulary.length > 0 ? { keyterm: vocabulary } : {}),
     },
+  });
+}
+
+function buildLlm(): llm.LLM {
+  const gemini = (location: string) =>
+    new google.LLM({
+      model: GEMINI_MODEL,
+      vertexai: true,
+      project: VERTEX_PROJECT,
+      location,
+      temperature: LLM_TEMPERATURE,
+      thinkingConfig: { thinkingBudget: 0 },
+    });
+  if (!VERTEX_FALLBACK_LOCATION || VERTEX_FALLBACK_LOCATION === VERTEX_LOCATION) return gemini(VERTEX_LOCATION);
+
+  // A 429 means the region's shared capacity is momentarily full; the other region has its own pool.
+  // The SDK logs each switch ("failed, switching to next LLM") and recovery ("LLM recovered").
+  return new llm.FallbackAdapter({
+    llms: [gemini(VERTEX_LOCATION), gemini(VERTEX_FALLBACK_LOCATION)],
+    attemptTimeout: 5,
   });
 }
 
@@ -149,6 +171,10 @@ export default defineAgent({
 
     const session = new voice.AgentSession({
       connOptions: {
+        // The SDK ends the call after this many LLM failures with nothing spoken in between. One turn
+        // can fail several calls at once (preemptive, main, language retry), so 3 (the default) would
+        // hang up mid-outage; the recovery line resets the count whenever it is spoken.
+        maxUnrecoverableErrors: 8,
         llmConnOptions: { maxRetry: 1, retryIntervalMs: 300, timeoutMs: 8000 },
         ttsConnOptions: { maxRetry: 1, retryIntervalMs: 300 },
       },
@@ -171,14 +197,7 @@ export default defineAgent({
       },
       vad: ctx.proc.userData.vad as silero.VAD,
       stt: buildStt(vocabulary),
-      llm: new google.LLM({
-        model: GEMINI_MODEL,
-        vertexai: true,
-        project: VERTEX_PROJECT,
-        location: VERTEX_LOCATION,
-        temperature: LLM_TEMPERATURE,
-        thinkingConfig: { thinkingBudget: 0 },
-      }),
+      llm: buildLlm(),
       tts,
     });
 

@@ -65,6 +65,8 @@ export const LLM_TEMPERATURE = num("LLM_TEMPERATURE", 0.5);
 export const ADVISOR_TIMEZONE = process.env.ADVISOR_TIMEZONE?.trim() || "Asia/Kolkata";
 export const VERTEX_PROJECT = process.env.VERTEX_PROJECT?.trim() ?? "";
 export const VERTEX_LOCATION = process.env.VERTEX_LOCATION?.trim() ?? "us-central1";
+/** Second region used when the primary fails (e.g. a 429 from shared capacity). Empty disables it. */
+export const VERTEX_FALLBACK_LOCATION = (process.env.VERTEX_FALLBACK_LOCATION ?? "asia-southeast1").trim();
 
 export const RPC_TIMEOUT_MS = num("RPC_TIMEOUT_MS", 10_000);
 

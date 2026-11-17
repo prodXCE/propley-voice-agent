@@ -81,13 +81,22 @@ function replay(chunks: Chunk[]): ReadableStream<Chunk> {
 const HEAD_CHARS = 220;
 const SENTENCE_END = /[.!?](\s|$)/;
 
-function guardOpening(stream: ReadableStream<Chunk>): ReadableStream<Chunk> {
+function guardOpening(stream: ReadableStream<Chunk>, onRecover: () => void): ReadableStream<Chunk> {
   return new ReadableStream<Chunk>({
     async start(controller) {
       const reader = stream.getReader();
       const buffered: Chunk[] = [];
       let head = "";
       let sawTool = false;
+      let sent = false;
+
+      // The LLM failed (e.g. every region returned 429) or said nothing: never leave the advisor in silence.
+      const recover = (why: string) => {
+        console.warn(`[llm] ${why}, speaking recovery line`);
+        onRecover();
+        controller.enqueue(RECOVERY_LINE);
+        controller.close();
+      };
 
       try {
         while (head.length < HEAD_CHARS && !sawTool && !SENTENCE_END.test(head)) {
@@ -105,6 +114,9 @@ function guardOpening(stream: ReadableStream<Chunk>): ReadableStream<Chunk> {
           if (delta.content) head += delta.content;
         }
 
+        if (!head.trim() && !sawTool) return recover("empty reply");
+
+        sent = true;
         const cleaned = sawTool ? head : stripPlumbing(stripGrovel(head));
 
         if (cleaned === head) {
@@ -121,6 +133,7 @@ function guardOpening(stream: ReadableStream<Chunk>): ReadableStream<Chunk> {
         }
         controller.close();
       } catch (err) {
+        if (!sent) return recover(`reply failed: ${String(err).slice(0, 120)}`);
         controller.error(err);
       } finally {
         reader.releaseLock();
@@ -225,6 +238,7 @@ export class PropleyAgent extends voice.Agent {
   private answeredIn: string = DEFAULT_TTS_LANGUAGE;
   /** Records how each reply was produced (turn telemetry). */
   onStep: (step: string) => void = () => {};
+  private readonly recovered = () => this.onStep("recovery-line");
 
   constructor(
     private readonly bridge: BrowserBridge,
@@ -378,14 +392,21 @@ export class PropleyAgent extends voice.Agent {
 
     if (!needsGrounding && !switched) {
       this.onStep("stream");
-      return guardOpening(stream);
+      return guardOpening(stream, this.recovered);
     }
 
-    const collected = await collectStream(stream);
+    let collected: Collected;
+    try {
+      collected = await collectStream(stream);
+    } catch (err) {
+      console.warn(`[llm] reply failed: ${String(err).slice(0, 120)}, speaking recovery line`);
+      this.recovered();
+      return textToStream(RECOVERY_LINE);
+    }
 
     if (collected.calledTool) {
       this.onStep("tool");
-      return guardOpening(replay(collected.chunks));
+      return guardOpening(replay(collected.chunks), this.recovered);
     }
 
     this.onStep(needsGrounding ? "checked" : "checked-lang");
@@ -400,7 +421,7 @@ export class PropleyAgent extends voice.Agent {
 
     const spokenOut = await this.enforceLanguage(grounded, chatCtx, toolCtx, modelSettings, spoken, languageRetry);
     this.answeredIn = spoken;
-    return guardOpening(replay(spokenOut.chunks));
+    return guardOpening(replay(spokenOut.chunks), this.recovered);
   }
 
   private async groundOrRetry(
@@ -442,7 +463,13 @@ export class PropleyAgent extends voice.Agent {
     }
     if (!retryStream) return null;
 
-    const retried = await collectStream(retryStream);
+    let retried: Collected;
+    try {
+      retried = await collectStream(retryStream);
+    } catch (err) {
+      console.error("[grounding] retry failed", err);
+      return null;
+    }
 
     if (
       isUngrounded({
