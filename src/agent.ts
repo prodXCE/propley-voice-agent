@@ -359,6 +359,10 @@ export class PropleyAgent extends voice.Agent {
 
     const switched = spoken !== this.answeredIn;
 
+    // A switch turn is held back for a language check anyway, so start the corrective call now
+    // rather than after the check fails (it would add a full LLM round trip). Unused if not needed.
+    const languageRetry = switched ? this.languageRetry(chatCtx, toolCtx, modelSettings, spoken) : null;
+
     let stream: ReadableStream<ChatChunk | string | FlushSentinel> | null;
     try {
       stream = await super.llmNode(chatCtx, toolCtx, modelSettings);
@@ -394,7 +398,7 @@ export class PropleyAgent extends voice.Agent {
       return textToStream(SAFE_FALLBACK);
     }
 
-    const spokenOut = await this.enforceLanguage(grounded, chatCtx, toolCtx, modelSettings, spoken);
+    const spokenOut = await this.enforceLanguage(grounded, chatCtx, toolCtx, modelSettings, spoken, languageRetry);
     this.answeredIn = spoken;
     return guardOpening(replay(spokenOut.chunks));
   }
@@ -463,14 +467,30 @@ export class PropleyAgent extends voice.Agent {
     toolCtx: ToolContext,
     modelSettings: ModelSettings,
     spoken: string,
+    prepared: Promise<Collected | null> | null = null,
   ): Promise<Collected> {
     if (out.calledTool || !out.text) return out;
     if (speaksLanguage(out.text, spoken)) return out;
 
-    const name = languageName(spoken);
     console.warn(`[lang] wrong language out (wanted ${spoken}): ${JSON.stringify(out.text.slice(0, 40))}`);
-    this.onStep("lang-retry");
+    this.onStep(prepared ? "lang-retry-early" : "lang-retry");
 
+    const retried = await (prepared ?? this.languageRetry(chatCtx, toolCtx, modelSettings, spoken));
+    if (retried?.text && speaksLanguage(retried.text, spoken)) {
+      console.log(`[lang] recovered in ${spoken}`);
+      return retried;
+    }
+    return out;
+  }
+
+  /** The same turn re-asked with only the current exchange and a hard language order. */
+  private async languageRetry(
+    chatCtx: ChatContext,
+    toolCtx: ToolContext,
+    modelSettings: ModelSettings,
+    spoken: string,
+  ): Promise<Collected | null> {
+    const name = languageName(spoken);
     const retryCtx = currentTurnOnly(chatCtx);
     applyInstructions(
       retryCtx,
@@ -484,17 +504,11 @@ export class PropleyAgent extends voice.Agent {
 
     try {
       const retryStream = await super.llmNode(retryCtx, toolCtx, modelSettings);
-      if (!retryStream) return out;
-      const retried = await collectStream(retryStream);
-      if (retried.text && speaksLanguage(retried.text, spoken)) {
-        console.log(`[lang] recovered in ${spoken}`);
-        return retried;
-      }
+      return retryStream ? await collectStream(retryStream) : null;
     } catch (err) {
       console.error("[lang] retry failed", err);
+      return null;
     }
-
-    return out;
   }
 
   private applyLanguage(text: string): void {
