@@ -223,6 +223,8 @@ export class PropleyAgent extends voice.Agent {
 
   private confidence = 1;
   private answeredIn: string = DEFAULT_TTS_LANGUAGE;
+  /** Records how each reply was produced (turn telemetry). */
+  onStep: (step: string) => void = () => {};
 
   constructor(
     private readonly bridge: BrowserBridge,
@@ -362,21 +364,35 @@ export class PropleyAgent extends voice.Agent {
       stream = await super.llmNode(chatCtx, toolCtx, modelSettings);
     } catch (err) {
       console.error("[llm] failed", err);
+      this.onStep("llm-error");
       return textToStream(RECOVERY_LINE);
     }
-    if (!stream) return textToStream(RECOVERY_LINE);
+    if (!stream) {
+      this.onStep("llm-empty");
+      return textToStream(RECOVERY_LINE);
+    }
 
-    if (!needsGrounding && !switched) return guardOpening(stream);
+    if (!needsGrounding && !switched) {
+      this.onStep("stream");
+      return guardOpening(stream);
+    }
 
     const collected = await collectStream(stream);
 
-    if (collected.calledTool) return guardOpening(replay(collected.chunks));
+    if (collected.calledTool) {
+      this.onStep("tool");
+      return guardOpening(replay(collected.chunks));
+    }
 
+    this.onStep(needsGrounding ? "checked" : "checked-lang");
     const grounded = await this.groundOrRetry(
       collected,
       { chatCtx, toolCtx, modelSettings, userText, screen, hasToolOutput },
     );
-    if (grounded === null) return textToStream(SAFE_FALLBACK);
+    if (grounded === null) {
+      this.onStep("refused");
+      return textToStream(SAFE_FALLBACK);
+    }
 
     const spokenOut = await this.enforceLanguage(grounded, chatCtx, toolCtx, modelSettings, spoken);
     this.answeredIn = spoken;
@@ -409,6 +425,7 @@ export class PropleyAgent extends voice.Agent {
     }
 
     console.warn(`[grounding] ungrounded answer blocked: ${JSON.stringify(collected.text)}`);
+    this.onStep("grounding-retry");
 
     const retryCtx = chatCtx.copy();
     retryCtx.addMessage({ role: "system", content: RETRY_INSTRUCTION });
@@ -452,6 +469,7 @@ export class PropleyAgent extends voice.Agent {
 
     const name = languageName(spoken);
     console.warn(`[lang] wrong language out (wanted ${spoken}): ${JSON.stringify(out.text.slice(0, 40))}`);
+    this.onStep("lang-retry");
 
     const retryCtx = currentTurnOnly(chatCtx);
     applyInstructions(
