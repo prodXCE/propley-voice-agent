@@ -15,6 +15,7 @@ import { BackgroundVoiceCancellation } from "@livekit/noise-cancellation-node";
 import { fileURLToPath } from "node:url";
 import { PropleyAgent } from "./agent.js";
 import { BrowserBridge } from "./browser-bridge.js";
+import { previousConversation } from "./previous.js";
 import { composeGreeting, type PipelineSnapshot } from "./greeting.js";
 import { FILLER_LANGUAGES, pickFiller } from "./fillers.js";
 import { FillerCache } from "./filler-cache.js";
@@ -160,8 +161,10 @@ export default defineAgent({
     console.log(`[boot] participant joined ${since()}`);
     const bridge = new BrowserBridge(ctx.room, participant.identity);
 
-    const { terms: vocabulary, domains } = await bridge.vocabulary();
-    console.log(`[boot] vocabulary: ${vocabulary.length} terms, ${domains.length} email domains ${since()}`);
+    const [{ terms: vocabulary, domains }, previous] = await Promise.all([bridge.vocabulary(), bridge.history()]);
+    console.log(
+      `[boot] vocabulary: ${vocabulary.length} terms, ${domains.length} email domains; previous session: ${previous?.messages.length ?? 0} lines ${since()}`,
+    );
 
     const tts = buildTts();
 
@@ -241,7 +244,7 @@ export default defineAgent({
 
     bridge.onRpc = (timing) => turn.rpcDone(timing);
 
-    const agent = new PropleyAgent(bridge, tts, vocabulary, VOICE_LANGUAGES, domains);
+    const agent = new PropleyAgent(bridge, tts, vocabulary, VOICE_LANGUAGES, domains, previousConversation(previous));
     agent.onStep = (step) => turn.step(step);
 
     const fillerCache = ctx.proc.userData.fillers as FillerCache;

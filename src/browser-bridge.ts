@@ -38,6 +38,11 @@ export interface RpcTiming {
   ok: boolean;
 }
 
+export interface PreviousSession {
+  endedAt: string;
+  messages: { role: "advisor" | "assistant"; text: string }[];
+}
+
 export class BrowserBridge {
   /** Called after every RPC round trip to the browser (turn telemetry). */
   onRpc: ((timing: RpcTiming) => void) | null = null;
@@ -141,6 +146,16 @@ export class BrowserBridge {
       return { terms: strings(parsed.terms), domains: strings(parsed.domains) };
     } catch {
       return { terms: [], domains: [] };
+    }
+  }
+
+  /** The advisor's previous assistant session, oldest line first, or null (first session, or the browser can't say). */
+  async history(): Promise<PreviousSession | null> {
+    try {
+      const { session } = JSON.parse(await this.call("history.get", {})) as { session?: PreviousSession | null };
+      return session && Array.isArray(session.messages) && session.messages.length > 0 ? session : null;
+    } catch {
+      return null;
     }
   }
 

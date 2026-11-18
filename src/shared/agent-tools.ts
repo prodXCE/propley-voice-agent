@@ -245,11 +245,23 @@ export const AGENT_TOOLS: AgentToolSpec[] = [
     description:
       "Add a client to the portfolio. USE THIS for: add a customer/client/lead, 'new lead', 'put someone on my books'. The NAME is the only thing you need — ask for it if they have not said it. Phone, email and city are OPTIONAL: offer to take them, but if the advisor does not have them or wants to skip, go ahead without. Never demand a phone number. It saves NOTHING yet — it reads the change back as a question, and you wait for a spoken yes before calling confirm_action.",
     parameters: {
-      name: { type: "string", description: "Client full name." },
+      name: { type: "string", description: "Client full name, ALWAYS in English letters, even when they speak Hindi (तपस्विन → Tapaswin)." },
       email: { type: "string", description: "Email if given." },
       phone: { type: "string", description: "Phone if given." },
       city: { type: "string", description: "City if given." },
     },
+  },
+  {
+    name: "rename_client",
+    kind: "action",
+    commandId: "rename-client",
+    description:
+      "Change a client's name. USE THIS when a name was saved wrong or misheard: 'it's Tapaswin, not Tapaswan', 'fix the spelling', 'rename Rahul to Rahul Verma'. Pass the name as it is saved now in `client`. It changes NOTHING yet — read the summary back as a question and wait for a yes before confirm_action.",
+    parameters: {
+      client: { type: "string", description: "The client's name as currently saved." },
+      new_name: { type: "string", description: "The correct full name, in English letters (तपस्विन → Tapaswin)." },
+    },
+    required: ["client", "new_name"],
   },
   {
     name: "client_brief",
@@ -265,7 +277,7 @@ export const AGENT_TOOLS: AgentToolSpec[] = [
     name: "search_knowledge",
     kind: "read",
     description:
-      "Search what was SAID and WRITTEN before: presentation transcripts, the advisor's presentation notes, client notes and — if the advisor turned it on — their emails with clients. USE THIS for anything about what a client said, asked, wanted, liked, worried about or agreed to — 'what did Rahul say about parking?', 'what's Sofia's budget?', 'did Priya ask for a discount?', 'what did Arjun email about?'. Pass `client` whenever they name one. Answer ONLY from the returned text and mention when it was said. If nothing returned answers it, say you have no record of that — never fill the gap.",
+      "Search what was SAID and WRITTEN before: presentation transcripts, the advisor's presentation notes, client notes, the advisor's EARLIER CONVERSATIONS WITH YOU, and — if the advisor turned it on — their emails with clients. For 'what did I ask you about Rahul yesterday?' leave out `client` unless they name one. USE THIS for anything about what a client said, asked, wanted, liked, worried about or agreed to — 'what did Rahul say about parking?', 'what's Sofia's budget?', 'did Priya ask for a discount?', 'what did Arjun email about?'. Pass `client` whenever they name one. Answer ONLY from the returned text and mention when it was said. If nothing returned answers it, say you have no record of that — never fill the gap.",
     parameters: {
       query: { type: "string", description: "The question in their words, e.g. 'what did he say about parking'." },
       client: { type: "string", description: "Client name, if they named one. The match is phonetic." },

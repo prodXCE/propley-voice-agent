@@ -8,7 +8,7 @@ import { clockLine, SYSTEM_PROMPT } from "./prompt.js";
 import { isMeaningfulUtterance } from "./utterance.js";
 import { stripSelfEcho } from "./echo.js";
 import { stripGrovel, stripPlumbing } from "./grovel.js";
-import { snapEmailDomains, snapToVocabulary } from "./vocab.js";
+import { introducesName, snapEmailDomains, snapToVocabulary } from "./vocab.js";
 import { buildTools, newTurnBudget, type TurnBudget } from "./tools.js";
 import {
   isDataQuestion,
@@ -16,6 +16,9 @@ import {
   RETRY_INSTRUCTION,
   SAFE_FALLBACK,
   type ConversationEvidence,
+  claimsDone,
+  ACTION_RETRY_INSTRUCTION,
+  NOT_DONE_FALLBACK,
 } from "./grounding.js";
 
 const RECOVERY_LINE = "Sorry, I lost that — say it again?";
@@ -82,7 +85,15 @@ function replay(chunks: Chunk[]): ReadableStream<Chunk> {
 const HEAD_CHARS = 220;
 const SENTENCE_END = /[.!?](\s|$)/;
 
-function guardOpening(stream: ReadableStream<Chunk>, onRecover: () => void): ReadableStream<Chunk> {
+/**
+ * `onClaim`: when the reply opens by saying something was done but nothing succeeded this turn, it is called
+ * instead of speaking that; it returns the replacement (a retried reply, possibly a tool call) or null.
+ */
+function guardOpening(
+  stream: ReadableStream<Chunk>,
+  onRecover: () => void,
+  onClaim?: () => Promise<Collected | null>,
+): ReadableStream<Chunk> {
   return new ReadableStream<Chunk>({
     async start(controller) {
       const reader = stream.getReader();
@@ -117,6 +128,20 @@ function guardOpening(stream: ReadableStream<Chunk>, onRecover: () => void): Rea
 
         if (!head.trim() && !sawTool) return recover("empty reply");
 
+        if (onClaim && !sawTool && claimsDone(head)) {
+          console.warn(`[claim] said done without doing it: ${JSON.stringify(head.slice(0, 80))}`);
+          await reader.cancel().catch(() => {});
+          const retried = await onClaim().catch(() => null);
+          sent = true;
+          if (retried && (retried.calledTool || (retried.text && !claimsDone(retried.text)))) {
+            for (const chunk of retried.chunks) controller.enqueue(chunk);
+          } else {
+            controller.enqueue(NOT_DONE_FALLBACK);
+          }
+          controller.close();
+          return;
+        }
+
         sent = true;
         const cleaned = sawTool ? head : stripPlumbing(stripGrovel(head));
 
@@ -143,6 +168,17 @@ function guardOpening(stream: ReadableStream<Chunk>, onRecover: () => void): Rea
   });
 }
 
+/** A tool ran since the advisor's last message and did not fail: replies may then say it was done. */
+function actionSucceeded(chatCtx: ChatContext): boolean {
+  const items = chatCtx.items;
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i];
+    if (item.type === "message" && item.role === "user") return false;
+    if (item.type === "function_call_output" && !/"error"\s*:/.test(String(item.output ?? ""))) return true;
+  }
+  return false;
+}
+
 function hasFreshToolOutput(chatCtx: ChatContext): boolean {
   const items = chatCtx.items;
   for (let i = items.length - 1; i >= 0; i--) {
@@ -154,8 +190,8 @@ function hasFreshToolOutput(chatCtx: ChatContext): boolean {
 }
 
 /** Everything the conversation already holds, for the grounding check: see grounding.supported(). */
-function conversationEvidence(chatCtx: ChatContext): ConversationEvidence {
-  const said: string[] = [];
+function conversationEvidence(chatCtx: ChatContext, previous = ""): ConversationEvidence {
+  const said: string[] = previous ? [previous] : [];
   const heard: string[] = [];
   for (const item of chatCtx.items) {
     if (item.id === INSTRUCTIONS_ID) continue;
@@ -240,6 +276,9 @@ function currentTurnOnly(chatCtx: ChatContext): ChatContext {
 
 const INSTRUCTIONS_ID = "lk.agent_task.instructions";
 
+/** How much of what the agent has said aloud is kept for the read-back guard. */
+const SPOKEN_MEMORY_CHARS = 8000;
+
 function applyInstructions(chatCtx: ChatContext, instructions: string): boolean {
   const index = chatCtx.indexById(INSTRUCTIONS_ID);
   if (index === undefined) return false;
@@ -264,7 +303,7 @@ function replaceLastUserText(chatCtx: ChatContext, text: string): void {
 export class PropleyAgent extends voice.Agent {
   private ttsLanguage: string | null = null;
   private lastContext: string | null = null;
-  private readonly turn: { text: string; agentSaid: string; typed: boolean };
+  private readonly turn: { text: string; agentSaid: string; spoken: string; typed: boolean };
   private readonly budget: TurnBudget;
   private readonly language: LanguagePolicy;
 
@@ -280,13 +319,15 @@ export class PropleyAgent extends voice.Agent {
     private readonly vocabulary: string[] = [],
     languages: string[] = [],
     private readonly emailDomains: string[] = [],
+    /** The advisor's previous session (previous.ts), or "". */
+    private readonly previous: string = "",
   ) {
-    const turn = { text: "", agentSaid: "", typed: false };
+    const turn = { text: "", agentSaid: "", spoken: "", typed: false };
     const budget = newTurnBudget();
     super({
       instructions: SYSTEM_PROMPT,
       allowInterruptions: true,
-      tools: buildTools(bridge, () => turn.text, budget, () => ({ agentSaid: turn.agentSaid, typed: turn.typed })),
+      tools: buildTools(bridge, () => turn.text, budget, () => ({ agentSaid: `${turn.agentSaid}\n${turn.spoken}`, typed: turn.typed })),
     });
     this.turn = turn;
     this.budget = budget;
@@ -371,7 +412,12 @@ export class PropleyAgent extends voice.Agent {
       return null;
     }
 
-    const userText = snapEmailDomains(snapToVocabulary(deEchoed, this.vocabulary), this.emailDomains).trim();
+    // Snapping fixes speech-recognition mishearings. Typed text is exactly what they meant, and a name being
+    // introduced or corrected must not be pulled onto an existing client (Tapaswin -> Tapaswan).
+    const userText =
+      this.turn.typed || introducesName(deEchoed)
+        ? deEchoed
+        : snapEmailDomains(snapToVocabulary(deEchoed, this.vocabulary), this.emailDomains).trim();
 
     if (userText !== heard) {
       console.log(`[heard] ${JSON.stringify(heard)} -> ${JSON.stringify(userText)}`);
@@ -390,7 +436,7 @@ export class PropleyAgent extends voice.Agent {
     const spoken = this.language.language;
 
     const pageContext = await this.bridge.pageContext();
-    const instructions = [languageDirective(spoken), SYSTEM_PROMPT, pageContext, clockLine()]
+    const instructions = [languageDirective(spoken), SYSTEM_PROMPT, this.previous, pageContext, clockLine()]
       .filter(Boolean)
       .join("\n\n");
 
@@ -443,9 +489,12 @@ export class PropleyAgent extends voice.Agent {
       return textToStream(RECOVERY_LINE);
     }
 
+    // Nothing succeeded this turn, so the reply may not say anything was done.
+    const onClaim = actionSucceeded(chatCtx) ? undefined : () => this.claimRetry(chatCtx, toolCtx, modelSettings);
+
     if (!needsGrounding && !switched) {
       this.onStep("stream");
-      return guardOpening(stream, this.recovered);
+      return guardOpening(stream, this.recovered, onClaim);
     }
 
     let collected: Collected;
@@ -465,7 +514,7 @@ export class PropleyAgent extends voice.Agent {
     this.onStep(needsGrounding ? "checked" : "checked-lang");
     const grounded = await this.groundOrRetry(
       collected,
-      { chatCtx, toolCtx, modelSettings, userText, screen, hasToolOutput, evidence: conversationEvidence(chatCtx) },
+      { chatCtx, toolCtx, modelSettings, userText, screen, hasToolOutput, evidence: conversationEvidence(chatCtx, this.previous) },
     );
     if (grounded === null) {
       this.onStep("refused");
@@ -474,7 +523,21 @@ export class PropleyAgent extends voice.Agent {
 
     const spokenOut = await this.enforceLanguage(grounded, chatCtx, toolCtx, modelSettings, spoken, languageRetry);
     this.answeredIn = spoken;
-    return guardOpening(replay(spokenOut.chunks), this.recovered);
+    return guardOpening(replay(spokenOut.chunks), this.recovered, onClaim);
+  }
+
+  /** The turn again, told that nothing was done: it must act (call the tool) or say plainly it hasn't. */
+  private async claimRetry(chatCtx: ChatContext, toolCtx: ToolContext, modelSettings: ModelSettings): Promise<Collected | null> {
+    this.onStep("claim-retry");
+    const retryCtx = chatCtx.copy();
+    retryCtx.addMessage({ role: "system", content: ACTION_RETRY_INSTRUCTION });
+    try {
+      const stream = await super.llmNode(retryCtx, toolCtx, modelSettings);
+      return stream ? await collectStream(stream) : null;
+    } catch (err) {
+      console.error("[claim] retry failed", err);
+      return null;
+    }
   }
 
   private async groundOrRetry(
@@ -621,11 +684,21 @@ export class PropleyAgent extends voice.Agent {
       }
     }
 
+    // Everything spoken is noted as it is spoken: a reply that fails halfway (Vertex 429) is never saved to the
+    // history, but the advisor heard it, and the read-back guard must count it (or it loops on "read it back").
+    const turn = this.turn;
+    const note = (chunk: string) => {
+      turn.spoken = `${turn.spoken}${chunk}`.slice(-SPOKEN_MEMORY_CHARS);
+    };
     const replayed = (async function* () {
-      for (const chunk of buffered) yield chunk;
+      for (const chunk of buffered) {
+        note(chunk);
+        yield chunk;
+      }
       while (true) {
         const { value, done } = await iterator.next();
         if (done) return;
+        note(value);
         yield value;
       }
     })();

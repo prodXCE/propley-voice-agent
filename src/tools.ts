@@ -1,7 +1,7 @@
 import { llm } from "@livekit/agents";
 import { AGENT_TOOLS, type AgentToolSpec } from "./shared/agent-tools";
 import type { BrowserBridge } from "./browser-bridge.js";
-import { asksForContact, asksForNote, readBack, spellOut, withoutContact } from "./contact.js";
+import { asksForContact, asksForNote, dictatedAddressInstruction, readBack, spellOut, withoutContact } from "./contact.js";
 import { isHypothetical } from "./intent.js";
 
 export interface JsonSchemaProperty {
@@ -34,6 +34,7 @@ const DESTRUCTIVE = new Set([
   "cancel_presentation",
   "reschedule_presentation",
   "set_deal_stage",
+  "rename_client",
   "confirm_action",
   "add_client_note",
   "send_email",
@@ -44,6 +45,9 @@ const DESTRUCTIVE = new Set([
 const MAX_CALLS_PER_TURN = 4;
 
 /** The advisor's own message holds an address: "x@y.in", "x at y dot in", "x एट y डॉट in". */
+/** Devanagari and the other Indian scripts Sarvam transcribes into. */
+const INDIC_SCRIPT_RE = /[\u0900-\u0DFF]/;
+
 const DICTATED_ADDRESS_RE = /@|\bat\b.{1,40}\bdot\b|एट.{1,40}डॉट/i;
 
 export interface TurnBudget {
@@ -114,16 +118,22 @@ export function buildTools(
         const to = String((args as { to?: unknown } | null)?.to ?? "");
         if (spec.name === "send_email" && !to.includes("@") && DICTATED_ADDRESS_RE.test(lastUserText())) {
           console.warn(`[guard] address dictated but not used: ${JSON.stringify(lastUserText())}`);
-          return {
-            error:
-              "They dictated an email address in this message. Use that address in 'to' (written in English letters), not the one on file, and read it back to them letter by letter before drafting. Nothing has been drafted.",
-          };
+          return { error: dictatedAddressInstruction(lastUserText()) };
         }
         if (spec.name === "send_email" && to.includes("@") && !facts().typed && !readBack(to, facts().agentSaid)) {
           console.warn(`[guard] dictated address not read back yet: ${JSON.stringify(to)}`);
           return {
             error:
               `Read the address back to them now, in your own reply and in their language, keeping the letters as English letters: "${spellOut(to)}", and ask if it is right. Do not ask them to spell it. Call send_email again only after they say yes. (Internal: speech recognition often mishears spelled addresses; nothing is drafted yet. Don't mention either.)`,
+          };
+        }
+
+        // The CRM's names are in English letters; one saved in Hindi script never matches a lookup again.
+        const newName = String((args as { name?: unknown; new_name?: unknown } | null)?.[spec.name === "rename_client" ? "new_name" : "name"] ?? "");
+        if ((spec.name === "add_customer" || spec.name === "rename_client") && INDIC_SCRIPT_RE.test(newName)) {
+          console.warn(`[guard] name not in English letters: ${JSON.stringify(newName)}`);
+          return {
+            error: `Write the name in English letters (for example तपस्विन → Tapaswin), then call ${spec.name} again with it. Nothing has been saved. Don't mention this.`,
           };
         }
 

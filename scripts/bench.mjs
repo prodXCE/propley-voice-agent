@@ -11,6 +11,12 @@
  *   node scripts/bench.mjs --scenario email --log <worker log>
  *                                             # dictated email addresses through real STT: is the address heard,
  *                                             # remembered, corrected and spelled back right? (local worker only)
+ *   node scripts/bench.mjs --scenario names --log <worker log>
+ *                                             # spoken new names and renames: is "Tapaswin" kept apart from an
+ *                                             # existing "Tapaswan", and fixed with rename_client? (local worker only)
+ *   node scripts/bench.mjs --scenario memory --log <worker log>
+ *                                             # a previous session served by history.get: is it recalled, and
+ *                                             # is nothing in it claimed as done? (local worker only)
  *
  * Worker-side numbers: run scripts/turn-report.py over the worker's log.
  */
@@ -76,6 +82,49 @@ const EMAIL_CONVERSATIONS = [
   ],
 ];
 
+// Memory across sessions (--scenario memory): the fake browser serves a previous session through history.get;
+// `expect` = words the reply must contain, `never` = words it must not.
+const PREVIOUS_SESSION = {
+  sessionId: "propley-voice-bench-previous",
+  endedAt: "2026-11-17T11:40:00Z",
+  messages: [
+    { role: "advisor", text: "Tell me about Vikram Shah.", at: "2026-11-17T11:31:00Z" },
+    { role: "assistant", text: "Vikram Shah is a new lead from Thane, interested in Lakeview Residences.", at: "2026-11-17T11:31:05Z" },
+    { role: "advisor", text: "He wants a three BHK under two crore. Email him the Lakeview brochure.", at: "2026-11-17T11:32:00Z" },
+    { role: "assistant", text: "The draft is on your screen. Check it and tap Send.", at: "2026-11-17T11:32:08Z" },
+  ],
+};
+const MEMORY_CONVERSATION = [
+  { lang: "en-IN", text: "What were we discussing last time?", expect: ["vikram"] },
+  { lang: "en-IN", text: "What budget did I mention for him?", expect: ["two crore|2 crore"] },
+  { lang: "en-IN", text: "Did the brochure email go out?", never: ["^(yes|it went|it was sent|it has been sent)\\b", "\\bwent out\\b(?! or)", "haven't done that", "\\b(is|'s) (still )?on your screen"] },
+];
+
+// Spoken names (--scenario names): a new name must not be pulled onto the existing "Tapaswan", and a misheard
+// one is fixed with rename_client. `check` gets that turn's tool calls; the fake CRM changes nothing.
+// Saved as said (not the existing Tapaswan) and in English letters: a name saved in Hindi script never matches again.
+const notTapaswan = (calls) => {
+  const saved = calls.filter((c) => c.name === "add_customer").map((c) => String(c.args?.name ?? "")).at(-1);
+  return saved !== undefined && !/tapaswan/i.test(saved) && /^[A-Za-z .'-]+$/.test(saved);
+};
+const NAME_CONVERSATIONS = [
+  [
+    { lang: "en-IN", text: "Add a new client named Tapaswin.", check: notTapaswan, what: "add_customer, not as Tapaswan" },
+    { lang: "en-IN", text: "Yes, go ahead.", check: (calls) => calls.some((c) => c.name === "confirm_action"), what: "confirm_action" },
+    {
+      lang: "en-IN",
+      text: "Sorry, I got the name wrong. Please rename Tapaswin to Tapasvi.",
+      check: (calls) => calls.some((c) => c.name === "rename_client" && /tapas[vw]i\b/i.test(String(c.args?.new_name ?? ""))),
+      what: "rename_client to Tapasvi",
+    },
+    { lang: "en-IN", text: "Yes.", check: (calls) => calls.some((c) => c.name === "confirm_action"), what: "confirm_action" },
+  ],
+  [
+    { lang: "hi-IN", text: "एक नया क्लाइंट जोड़ो, नाम है Tapaswin.", check: notTapaswan, what: "add_customer, not as Tapaswan" },
+    { lang: "hi-IN", text: "हाँ, कर दो।", check: (calls) => calls.some((c) => c.name === "confirm_action"), what: "confirm_action" },
+  ],
+];
+
 /** "r-o-h-a-n dot m at kestrel dot in" / "R O H A N.M@kestrel.in" -> "rohan.m@kestrel.in" */
 function normalizeAddress(text) {
   return String(text)
@@ -109,7 +158,8 @@ const PAGE = {
       MEETINGS.map((m, i) => `${i + 1}. ${m.client} — ${m.property} on ${m.date} at ${m.time}, advisor ${m.salesMember} (${m.status})`).join("\n"),
   ],
 };
-const VOCABULARY = [...CLIENTS.map((c) => c.name), "Ivory Heights", "Lakeview Residences", "Palm Grove"];
+// --scenario names: the CRM already has "Tapaswan", the name the engineer's "Tapaswin" was merged into.
+const VOCABULARY = [...CLIENTS.map((c) => c.name), ...(SCENARIO === "names" ? ["Tapaswan"] : []), "Ivory Heights", "Lakeview Residences", "Palm Grove"];
 
 function toolResult(name, args) {
   const q = String(args?.name ?? args?.query ?? args?.client ?? "").toLowerCase();
@@ -125,6 +175,12 @@ function toolResult(name, args) {
     case "get_client":
     case "client_brief":
       return { ...client, email: "client@example.com", phone: "+91 90000 00000", notes: ["Prefers sea-facing units", "Budget around 4 crore"] };
+    case "add_customer":
+      return { staged: true, needsConfirmation: true, summary: `Add ${args?.name} as a new client?` };
+    case "rename_client":
+      return { staged: true, needsConfirmation: true, summary: `Rename ${args?.client} to ${args?.new_name}?` };
+    case "confirm_action":
+      return args?.confirm === false ? { ok: true, message: "Cancelled." } : { ok: true, message: "Done." };
     case "send_email":
       return { awaitingApproval: true, note: "The draft is on their screen with Send and Cancel buttons. Tell them in one short line to check it and tap Send. It has NOT happened yet." };
     case "navigate":
@@ -203,6 +259,7 @@ async function runCall(round, clips, utterances = UTTERANCES) {
     toolCalls.push({ turn: turnIndex, name, args });
     return JSON.stringify({ ok: true, result: toolResult(name, args) });
   });
+  local.registerRpcMethod("history.get", async () => JSON.stringify({ session: SCENARIO === "memory" ? PREVIOUS_SESSION : null }));
   local.registerRpcMethod("wizard.input", async () => JSON.stringify({ prompt: "Okay.", done: true }));
 
   const source = new AudioSource(RATE, 1);
@@ -287,6 +344,56 @@ async function runCall(round, clips, utterances = UTTERANCES) {
 }
 
 // ---- main ---------------------------------------------------------------------------------
+/** The worker's turn lines for one bench room, greeting skipped. */
+function workerTurns(roomName) {
+  return readFileSync(WORKER_LOG, "utf8")
+    .split("\n")
+    .filter((l) => l.includes('"evt":"turn"') && l.includes(`"room":"${roomName}"`))
+    .map((l) => JSON.parse(l.slice(l.indexOf("{"))))
+    .filter((t) => t.heard);
+}
+
+if (SCENARIO === "names") {
+  if (!WORKER_LOG) throw new Error("--scenario names needs --log <the local worker's log file>");
+  let passed = 0, checked = 0;
+  for (const [c, conversation] of NAME_CONVERSATIONS.entries()) {
+    const convClips = [];
+    for (const u of conversation) convClips.push(await utteranceAudio(u));
+    console.log(`\nconversation ${c + 1}:`);
+    const { roomName, toolCalls } = await runCall(c + 1, convClips, conversation);
+    await sleep(1500);
+    const turns = workerTurns(roomName);
+    for (const [i, u] of conversation.entries()) {
+      const calls = toolCalls.filter((x) => x.turn === i);
+      const ok = u.check(calls);
+      checked++;
+      if (ok) passed++;
+      console.log(`  said : ${u.text}\n  heard: ${turns[i]?.heard ?? "(nothing)"}\n  agent: ${turns[i]?.said ?? "(nothing)"}`);
+      console.log(`  tools: ${calls.map((x) => `${x.name} ${JSON.stringify(x.args)}`).join("; ") || "(none)"}\n  ${ok ? "PASS" : "FAIL"}  expected ${u.what}`);
+    }
+  }
+  console.log(`\n${passed}/${checked} name checks passed`);
+  process.exit(0);
+}
+
+if (SCENARIO === "memory") {
+  if (!WORKER_LOG) throw new Error("--scenario memory needs --log <the local worker's log file>");
+  const clips = [];
+  for (const u of MEMORY_CONVERSATION) clips.push(await utteranceAudio(u));
+  const { roomName } = await runCall(1, clips, MEMORY_CONVERSATION);
+  await sleep(1500);
+  const turns = workerTurns(roomName);
+  let passed = 0;
+  for (const [i, u] of MEMORY_CONVERSATION.entries()) {
+    const said = String(turns[i]?.said ?? "");
+    const ok = (u.expect ?? []).every((w) => new RegExp(w, "i").test(said)) && !(u.never ?? []).some((w) => new RegExp(w, "i").test(said));
+    if (ok) passed++;
+    console.log(`  said : ${u.text}\n  heard: ${turns[i]?.heard ?? "(nothing)"}\n  agent: ${said || "(nothing)"}\n  ${ok ? "PASS" : "FAIL"}`);
+  }
+  console.log(`\n${passed}/${MEMORY_CONVERSATION.length} memory checks passed`);
+  process.exit(0);
+}
+
 if (SCENARIO === "email") {
   if (!WORKER_LOG) throw new Error("--scenario email needs --log <the local worker's log file> to read what was heard and said");
   let passed = 0, checked = 0;

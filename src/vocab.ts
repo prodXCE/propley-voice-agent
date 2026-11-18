@@ -132,6 +132,17 @@ function expand(vocabulary: string[]): Term[] {
   return [...terms.values()];
 }
 
+/**
+ * The advisor is giving a NEW name or correcting one ("add a new client named Tapaswin", "rename him",
+ * "it's Tapaswin, not Tapaswan"). Snapping it to a known client would defeat the point, so it is left as heard.
+ */
+const NAMING_RE =
+  /\b(new (client|customer|lead|contact)|add (a |an )?(client|customer|lead|contact)|named|called|rename|re-name|spell(ed|t|ing)?|(it'?s|is) [\w-]+,? not)\b|नया (क्लाइंट|कस्टमर|ग्राहक)|नाम बदल/i;
+
+export function introducesName(transcript: string): boolean {
+  return NAMING_RE.test(transcript);
+}
+
 export function snapToVocabulary(transcript: string, vocabulary: string[]): string {
   if (!transcript.trim() || vocabulary.length === 0) return transcript;
 
