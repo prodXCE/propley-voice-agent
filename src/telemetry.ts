@@ -39,10 +39,14 @@ export class TurnRecorder {
   private fillerAt?: number;
   private speakingAt?: number;
 
-  constructor(
-    private readonly room: string,
-    private readonly advisor: string,
-  ) {}
+  private readonly room: string;
+  private readonly advisor: string;
+
+  // Plain fields, not parameter properties: Node's built-in TypeScript stripping (npm test) can't erase those.
+  constructor(room: string, advisor: string) {
+    this.room = room;
+    this.advisor = advisor;
+  }
 
   private reset(): void {
     this.metrics = {};
@@ -111,8 +115,14 @@ export class TurnRecorder {
     return Math.round(Math.max(endpointingMs ?? 0, thinking) + ttsTtfbMs);
   }
 
-  said(reply: string, replyLanguage: string | null, interrupted = false): void {
+  /**
+   * `heardText`: the advisor message this reply answers, read from the conversation history (see index.ts).
+   * Pass it whenever known: a typed message can arrive while the previous reply is still being logged, and the
+   * running transcript would pin it to that older turn. "" means the reply answered nothing (a greeting).
+   */
+  said(reply: string, replyLanguage: string | null, interrupted = false, heardText?: string): void {
     if (!reply.trim()) return;
+    const heard = heardText ?? this.transcript;
 
     console.log(
       JSON.stringify({
@@ -121,8 +131,8 @@ export class TurnRecorder {
         room: this.room,
         advisor: this.advisor,
         n: ++this.index,
-        heard: this.transcript,
-        heardLang: this.heardLanguage,
+        heard,
+        heardLang: heard ? this.heardLanguage : null,
         said: reply,
         saidLang: replyLanguage,
         ...(interrupted ? { interrupted: true } : {}),
@@ -141,4 +151,32 @@ export class TurnRecorder {
     );
     this.reset();
   }
+}
+
+/** Minimal shape of a chat item, so this file stays free of SDK imports (npm test loads it directly). */
+interface HistoryItem {
+  id: string;
+  type: string;
+  role?: string;
+  textContent?: string;
+}
+
+/**
+ * The advisor message a reply answers: the nearest user message before it, unless another reply came in
+ * between. History is kept in creation order. `ignore` holds replies stamped out of order (the greeting is
+ * stamped when it ends, so it can sit between a typed question and the answer to it).
+ */
+export function questionBefore(
+  items: readonly HistoryItem[],
+  replyId: string,
+  ignore: ReadonlySet<string> = new Set(),
+): string {
+  const at = items.findIndex((i) => i.id === replyId);
+  for (let j = (at === -1 ? items.length : at) - 1; j >= 0; j--) {
+    const item = items[j];
+    if (item.type !== "message" || ignore.has(item.id)) continue;
+    if (item.role === "user") return item.textContent ?? "";
+    if (item.role === "assistant") return "";
+  }
+  return "";
 }

@@ -55,7 +55,7 @@ import {
 } from "./config.js";
 import { DEFAULT_TTS_LANGUAGE } from "./language.js";
 import { silentAmbience } from "./silence.js";
-import { TurnRecorder } from "./telemetry.js";
+import { TurnRecorder, questionBefore } from "./telemetry.js";
 
 bootstrapVertexCredentials();
 assertConfigured();
@@ -214,9 +214,24 @@ export default defineAgent({
       turn.heard(ev.transcript, ev.language ?? null);
     });
 
+    let greetingText: string | null = null; // set when the greeting is spoken; cleared once it is logged
+    const greetingIds = new Set<string>(); // the logged greeting, skipped when matching later questions
     session.on(voice.AgentSessionEventTypes.ConversationItemAdded, (ev) => {
       if (ev.item.type === "message" && ev.item.role === "assistant") {
-        turn.said(ev.item.textContent ?? "", agent.currentLanguage, ev.item.interrupted);
+        const text = ev.item.textContent ?? "";
+        // The greeting (session.say) is stamped when it ends, after any message typed during it, so history
+        // order can't tell it answered nothing. Its text (or the start of it, if cut off) gives it away.
+        const isGreeting = greetingText !== null && text.trim() !== "" && greetingText.startsWith(text.trim());
+        if (isGreeting) {
+          greetingText = null;
+          greetingIds.add(ev.item.id);
+        }
+        turn.said(
+          text,
+          agent.currentLanguage,
+          ev.item.interrupted,
+          isGreeting ? "" : questionBefore(session.history.items, ev.item.id, greetingIds),
+        );
       }
     });
 
@@ -239,6 +254,9 @@ export default defineAgent({
         // Typed chat (lk.chat): same as LiveKit's default, plus reading the language off the text.
         textInputCallback: (sess, ev) => {
           turn.heard(ev.text, agent.noteTypedLanguage(ev.text));
+          // Typed in, typed out: no speech, so the reply arrives as text at once and isn't held back by
+          // (or cut off during) audio nobody asked for. Speaking turns audio back on.
+          sess.output.setAudioEnabled(false);
           sess.interrupt();
           sess.generateReply({ userInput: ev.text });
         },
@@ -262,6 +280,7 @@ export default defineAgent({
 
     session.on(voice.AgentSessionEventTypes.UserStateChanged, (ev) => {
       cancelFiller();
+      if (ev.newState === "speaking" && !session.output.audioEnabled) session.output.setAudioEnabled(true);
       if (ev.oldState !== "speaking" || ev.newState === "speaking") return;
       bridge.prefetchPageContext();
       if (FILLER_DELAY_MS <= 0) return;
@@ -303,6 +322,7 @@ export default defineAgent({
     console.log(`[boot] session started ${since()}`);
 
     const greeting = await buildGreeting(bridge);
+    greetingText = greeting.trim();
     session.say(greeting, { allowInterruptions: true });
     console.log(`[ready] greeting speaking, already listening ${since()}`);
 
