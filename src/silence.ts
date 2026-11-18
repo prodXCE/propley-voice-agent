@@ -2,8 +2,9 @@ import { AudioFrame } from "@livekit/rtc-node";
 
 const CHANNELS = 1;
 const BLOCK_MS = 100;
-/** How far ahead of real time the silence may run. */
-const LEAD_MS = 200;
+/** How far ahead of real time the silence may run. Every ms of lead is a ms each filler waits behind it (it was
+ * 200, which put ~300 ms of queued silence ahead of every filler); silence that arrives late is inaudible. */
+const LEAD_MS = 20;
 
 /**
  * Endless silence that keeps the background mixer alive (the mixer stops for good once its last

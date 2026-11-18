@@ -189,7 +189,10 @@ function toolResult(name, args) {
     case "confirm_action":
       return args?.confirm === false ? { ok: true, message: "Cancelled." } : { ok: true, message: "Done." };
     case "send_email":
-      return { awaitingApproval: true, note: "The draft is on their screen with Send and Cancel buttons. Tell them in one short line to check it and tap Send. It has NOT happened yet." };
+      return { staged: true, needsConfirmation: true, summary: `Send ${args?.client || args?.to} the email "${args?.subject}"?` };
+    case "search_emails":
+    case "list_calendar_events":
+      return { ok: true, count: 0, [name === "search_emails" ? "emails" : "events"]: [] };
     case "navigate":
       return { page: String(args?.page ?? "Presentations"), counts: { total: MEETINGS.length } };
     default:

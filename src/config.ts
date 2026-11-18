@@ -41,8 +41,19 @@ export const INTERRUPTION_MIN_WORDS = num("INTERRUPTION_MIN_WORDS", 0);
 
 export const VAD_ACTIVATION_THRESHOLD = num("VAD_ACTIVATION_THRESHOLD", 0.6);
 export const VAD_MIN_SPEECH_MS = num("VAD_MIN_SPEECH_MS", 150);
+/** Silence before the VAD calls end of speech (Silero's default is 550). It starts the filler, the STT flush
+ * and the endpointing clock, so it bounds how fast anything can answer. */
+export const VAD_MIN_SILENCE_MS = num("VAD_MIN_SILENCE_MS", 250);
 
-export const ENDPOINTING_MIN_DELAY_MS = num("ENDPOINTING_MIN_DELAY_MS", 400);
+/** Silence before Sarvam is told to finalize. Not at the VAD's 250 ms: that split "Okay, thanks. How many…" at
+ * the comma and lost the rest. Sarvam's own silence detection takes ~750 ms. */
+export const STT_FLUSH_SILENCE_MS = num("STT_FLUSH_SILENCE_MS", 500);
+
+/** After the VAD's end of speech, before the turn may be committed: 250 + 700 = 950 ms of silence, as before
+ * (550 + 400). Committing sooner bought nothing — the answer is gated by the LLM, which already starts at the
+ * flushed transcript (~650 ms) via preemptive generation — and at 750 ms "Sorry, … rename Tapaswin" was cut
+ * at the comma. Mid-sentence pauses up to ~900 ms are common. */
+export const ENDPOINTING_MIN_DELAY_MS = num("ENDPOINTING_MIN_DELAY_MS", 700);
 export const ENDPOINTING_MAX_DELAY_MS = num("ENDPOINTING_MAX_DELAY_MS", 1600);
 
 export const GREETING =
@@ -84,7 +95,19 @@ export const VOICE_LANGUAGES = (process.env.VOICE_LANGUAGES ?? "")
   .map((code) => code.trim())
   .filter(Boolean);
 
-export const FILLER_DELAY_MS = num("FILLER_DELAY_MS", 150);
+/** After the VAD's end of speech: VAD_MIN_SILENCE_MS + this ≈ when the advisor first hears the agent (aim: 200-500 ms). */
+export const FILLER_DELAY_MS = num("FILLER_DELAY_MS", 30);
+/** Fillers at most this often, so pauses inside one sentence don't get an "Mm-hmm" each. */
+export const FILLER_MIN_GAP_MS = num("FILLER_MIN_GAP_MS", 2500);
+/** A tool still running after this, with nothing said, gets a "one moment". */
+export const SLOW_TOOL_MS = num("SLOW_TOOL_MS", 1500);
+
+/** Start the backup region when the primary has no first token by now (about its p90 TTFT). */
+export const LLM_HEDGE_MS = num("LLM_HEDGE_MS", 1100);
+/** No first token from either region by now: fail the call (recovery line) instead of hanging the turn. */
+export const LLM_DEADLINE_MS = num("LLM_DEADLINE_MS", 6000);
+/** After this much of a turn, skip the grounding / language / claim retries and answer with what there is. */
+export const TURN_RETRY_BUDGET_MS = num("TURN_RETRY_BUDGET_MS", 3500);
 
 export function bootstrapVertexCredentials(): void {
   if (process.env.GOOGLE_APPLICATION_CREDENTIALS) return;

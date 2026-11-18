@@ -33,6 +33,11 @@ export function pickFiller(language: string | null): string {
   return choice;
 }
 
+/** "One moment." in their language: the last line of each list. For a tool that is taking a while. */
+export function holdLine(language: string | null): string {
+  return fillersFor(language).at(-1)!;
+}
+
 export function resetFillerHistory(): void {
   lastSpoken = null;
 }

@@ -246,8 +246,8 @@ export const AGENT_TOOLS: AgentToolSpec[] = [
     parameters: {
       client: { type: "string", description: "Client name. Required." },
       project: { type: "string", description: "Development/project name. Required." },
-      date: { type: "string", description: "Date, e.g. 'tomorrow', '14 July'. Required." },
-      time: { type: "string", description: "Time, e.g. '3 PM', '10:00'. Required." },
+      date: { type: "string", description: "Date as YYYY-MM-DD; resolve 'tomorrow', '21st', 'next Friday' yourself. Required." },
+      time: { type: "string", description: "Time with AM/PM ('8 PM', '10:30 AM') or 24-hour ('20:00'). Required." },
     },
     required: ["client", "project", "date", "time"],
   },
@@ -303,7 +303,7 @@ export const AGENT_TOOLS: AgentToolSpec[] = [
     kind: "connector",
     connector: "gmail",
     description:
-      "Send an email from the advisor's own Gmail. USE THIS for: email/mail/write to/send Rahul the brochure, 'drop Sofia a line'. Name the client in `client` and the address is looked up for you — never ask for or invent an email address. Write the subject and the full body yourself, short and professional, signed with the advisor's name. It SENDS NOTHING YET: a draft card appears on their screen and THEY tap Send. Tell them in one short line to check it and tap Send. Never say it was sent. If it returns needsConnection, tell them to tap Connect on screen.",
+      "Send an email from the advisor's own Gmail. USE THIS for: email/mail/write to/send Rahul the brochure, 'drop Sofia a line'. Name the client in `client` and the address is looked up for you — never ask for or invent an email address. Write the subject and the full body yourself, short and professional, signed with the advisor's name. It SENDS NOTHING YET: it hands back a summary. Read it back as one short question with the gist of what the email says, get a spoken yes, then call confirm_action. Never say it was sent before confirm_action succeeds. If it returns needsConnection, tell them to tap Connect on screen.",
     parameters: {
       client: { type: "string", description: "The client's name, e.g. 'Rahul Verma'. Use this OR `to`." },
       to: { type: "string", description: "An email address the advisor dictated, only if it is not a client." },
@@ -317,7 +317,7 @@ export const AGENT_TOOLS: AgentToolSpec[] = [
     kind: "connector",
     connector: "gmail",
     description:
-      "Reply in the email thread with a client, from the advisor's own Gmail. USE THIS for: reply to Rahul's email, write back to Sofia, answer Priya's mail about the floor plan. It replies to the LATEST email with that client; pass `about` with a few words when they name a topic. Write the reply body from what the advisor told you; if they did not say what to reply, ask them first. It SENDS NOTHING YET: a reply card appears on their screen and THEY tap Send. Tell them in one short line to check it and tap Send. Never say it was sent.",
+      "Reply in the email thread with a client, from the advisor's own Gmail. USE THIS for: reply to Rahul's email, write back to Sofia, answer Priya's mail about the floor plan. It replies to the LATEST email with that client; pass `about` with a few words when they name a topic. Write the reply body from what the advisor told you; if they did not say what to reply, ask them first. It SENDS NOTHING YET: it hands back a summary and what the client last wrote. Read it back as one short question, get a spoken yes, then call confirm_action. Never say it was sent before confirm_action succeeds.",
     parameters: {
       client: { type: "string", description: "The client's name, e.g. 'Rahul Verma'." },
       about: { type: "string", description: "A few words to pick the right email, e.g. 'floor plan'. Optional." },
@@ -330,7 +330,7 @@ export const AGENT_TOOLS: AgentToolSpec[] = [
     kind: "connector",
     connector: "googlecalendar",
     description:
-      "Add an event to the advisor's own Google Calendar and invite a client. USE THIS for: put/add/block a site visit, call or meeting in my calendar, 'add Rahul on Friday at 4'. This is NOT for booking a Propley presentation — that is schedule_presentation. Resolve relative dates yourself into a local ISO date-time. It ADDS NOTHING YET: an event card appears on their screen and THEY tap Add. Tell them in one short line to check it and tap Add. Never say it was added. If it returns needsConnection, tell them to tap Connect on screen.",
+      "Add an event to the advisor's own Google Calendar and invite a client. USE THIS only once they said Google Calendar (or said yes to your offer to add it there): 'put the site visit on my Google Calendar', 'add it to Google too'. This is NOT for booking a Propley presentation — that is schedule_presentation; if they just say 'set an event', ask which. Never make up a title: if they did not say what it is, ask. Resolve relative dates yourself into a local ISO date-time. It ADDS NOTHING YET: it hands back a summary. Read it back as one short question, get a spoken yes, then call confirm_action. If something is already on their calendar at that time it says so and adds nothing: tell them. If it returns needsConnection, tell them to tap Connect on screen.",
     parameters: {
       title: { type: "string", description: "Event title, e.g. 'Site visit with Rahul Verma'." },
       start_time: { type: "string", description: "Local start, ISO 8601 without offset, e.g. '2026-11-21T16:00:00'." },
@@ -338,6 +338,7 @@ export const AGENT_TOOLS: AgentToolSpec[] = [
       client: { type: "string", description: "Client to invite, by name. Their address is looked up for you." },
       location: { type: "string", description: "Where, if they said." },
       description: { type: "string", description: "A line of notes, if useful." },
+      even_if_taken: { type: "boolean", description: "Only after they heard something is already at that time and still want a second event." },
     },
     required: ["title", "start_time"],
   },
@@ -346,10 +347,21 @@ export const AGENT_TOOLS: AgentToolSpec[] = [
     kind: "connector",
     connector: "googlecalendar",
     description:
-      "Read the advisor's own Google Calendar. USE THIS for: what's on my calendar, am I free on Friday, what do I have tomorrow. For Propley presentations use list_meetings instead. Without dates it covers the next 7 days.",
+      "Read the advisor's own Google Calendar. USE THIS for: what's on my Google Calendar, am I free on Friday, what do I have tomorrow, 'did it get added to my Google Calendar?'. You CAN see their Google Calendar: check it, never tell them to look themselves. For Propley presentations use list_meetings instead. Without dates it covers the next 7 days.",
     parameters: {
       from: { type: "string", description: "Start of the range, ISO date or date-time. Default now." },
       to: { type: "string", description: "End of the range, ISO date or date-time. Default 7 days after `from`." },
+    },
+  },
+  {
+    name: "search_emails",
+    kind: "connector",
+    connector: "gmail",
+    description:
+      "Read the advisor's own Gmail. USE THIS for: did Rahul reply, any email from Sofia, what did Priya write about the floor plan, did my email to Arjun go out. Name the client to see their emails both ways; add words to narrow it. Returns the latest 5 with sender, subject, date and the start of the text. You CAN see their Gmail: check it, never tell them to look themselves.",
+    parameters: {
+      client: { type: "string", description: "Client name, to see emails to and from them. Optional." },
+      query: { type: "string", description: "Gmail search words, e.g. 'floor plan' or 'in:sent brochure'. Optional." },
     },
   },
   {

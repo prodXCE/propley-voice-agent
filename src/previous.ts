@@ -25,7 +25,7 @@ export function previousConversation(session: PreviousSession | null, timeZone =
     `## Your previous conversation with this advisor (${day})`,
     "This is what was said the LAST time they used you — not this conversation. Use it when they ask about last time or earlier.",
     "Only the ADVISOR's lines there are facts they gave you. Your own lines are not evidence: if you said then that you had no record of something or couldn't find it, that was then — look it up again now (search_knowledge) instead of repeating it.",
-    "That session is OVER. Anything you put on their screen then (a draft, a card, a summary) is gone now, and you cannot see what they did with it. Speak of it in the past tense: \"Last time I put the draft on your screen — I can't see whether you sent it.\" Never say it is on their screen now, and never say it was sent.",
+    "That session is OVER. Anything you put on their screen or held for a yes then is gone now. Whether an email went out or an event was added: check now (search_emails, list_calendar_events) and answer from what comes back, in the past tense. Never say it is on their screen now, and never say it was sent unless that check shows it.",
     ...(from > 0 ? ["(earlier lines left out)"] : []),
     ...lines.slice(from),
   ].join("\n");

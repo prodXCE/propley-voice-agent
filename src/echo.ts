@@ -3,13 +3,14 @@ const MIN_ECHO_WORDS = 3;
 function words(text: string): string[] {
   return text
     .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    // \p{M}: Hindi vowel signs are marks; without them "का" and "के" both became "क" and matched.
+    .replace(/[^\p{L}\p{M}\p{N}\s]/gu, " ")
     .split(/\s+/)
     .filter(Boolean);
 }
 
 function dropWords(text: string, count: number): string {
-  const token = /[\p{L}\p{N}]+/gu;
+  const token = /[\p{L}\p{M}\p{N}]+/gu;
   let seen = 0;
   let match: RegExpExecArray | null;
 

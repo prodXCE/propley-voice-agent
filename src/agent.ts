@@ -1,3 +1,4 @@
+import { TURN_RETRY_BUDGET_MS } from "./config.js";
 import { voice, type ChatContext, type ChatChunk, type FlushSentinel, type stt, type ToolContext } from "@livekit/agents";
 import type * as sarvam from "@livekit/agents-plugin-sarvam";
 import type { AudioFrame } from "@livekit/rtc-node";
@@ -174,7 +175,8 @@ function actionSucceeded(chatCtx: ChatContext): boolean {
   for (let i = items.length - 1; i >= 0; i--) {
     const item = items[i];
     if (item.type === "message" && item.role === "user") return false;
-    if (item.type === "function_call_output" && !/"error"\s*:/.test(String(item.output ?? ""))) return true;
+    // A staged change ("needsConfirmation") has not happened yet: "I've sent it" would still be a lie.
+    if (item.type === "function_call_output" && !/"error"\s*:|"needsConfirmation"\s*:\s*true/.test(String(item.output ?? ""))) return true;
   }
   return false;
 }
@@ -312,6 +314,14 @@ export class PropleyAgent extends voice.Agent {
   /** Records how each reply was produced (turn telemetry). */
   onStep: (step: string) => void = () => {};
   private readonly recovered = () => this.onStep("recovery-line");
+  /** When this user turn started being answered, and which turn that was (count of their messages). */
+  private turnStartedAt = Date.now();
+  private turnIndex = -1;
+
+  /** Past the retry budget: answer with what there is rather than spend another LLM round trip on a check. */
+  private get late(): boolean {
+    return Date.now() - this.turnStartedAt > TURN_RETRY_BUDGET_MS;
+  }
 
   constructor(
     private readonly bridge: BrowserBridge,
@@ -404,6 +414,12 @@ export class PropleyAgent extends voice.Agent {
     toolCtx: ToolContext,
     modelSettings: ModelSettings,
   ): Promise<ReadableStream<ChatChunk | string | FlushSentinel> | null> {
+    const userCount = chatCtx.items.filter((i) => i.type === "message" && i.role === "user").length;
+    if (userCount !== this.turnIndex) {
+      this.turnIndex = userCount;
+      this.turnStartedAt = Date.now();
+    }
+
     const heard = stripLanguageTag(lastUserText(chatCtx)).trim();
     const deEchoed = stripSelfEcho(heard, lastAgentText(chatCtx)).trim();
 
@@ -532,6 +548,10 @@ export class PropleyAgent extends voice.Agent {
 
   /** The turn again, told that nothing was done: it must act (call the tool) or say plainly it hasn't. */
   private async claimRetry(chatCtx: ChatContext, toolCtx: ToolContext, modelSettings: ModelSettings): Promise<Collected | null> {
+    if (this.late) {
+      this.onStep("claim-retry-skipped");
+      return null; // the fixed "not done" line instead of another round trip
+    }
     this.onStep("claim-retry");
     const retryCtx = chatCtx.copy();
     retryCtx.addMessage({ role: "system", content: ACTION_RETRY_INSTRUCTION });
@@ -572,6 +592,10 @@ export class PropleyAgent extends voice.Agent {
     }
 
     console.warn(`[grounding] ungrounded answer blocked: ${JSON.stringify(collected.text)}`);
+    if (this.late) {
+      this.onStep("grounding-retry-skipped");
+      return null; // SAFE_FALLBACK: never the unchecked answer, and no further wait
+    }
     this.onStep("grounding-retry");
 
     const retryCtx = chatCtx.copy();
@@ -623,6 +647,10 @@ export class PropleyAgent extends voice.Agent {
     if (speaksLanguage(out.text, spoken)) return out;
 
     console.warn(`[lang] wrong language out (wanted ${spoken}): ${JSON.stringify(out.text.slice(0, 40))}`);
+    if (!prepared && this.late) {
+      this.onStep("lang-retry-skipped");
+      return out; // the right answer in the wrong language beats more silence
+    }
     this.onStep(prepared ? "lang-retry-early" : "lang-retry");
 
     const retried = await (prepared ?? this.languageRetry(chatCtx, toolCtx, modelSettings, spoken));
