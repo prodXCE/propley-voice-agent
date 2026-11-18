@@ -1,4 +1,7 @@
-export type AgentToolKind = "read" | "action" | "handoff";
+export type AgentToolKind = "read" | "action" | "handoff" | "connector";
+
+/** Apps an advisor connects through Composio (backend /api/v1/connectors). */
+export type ConnectorApp = "gmail" | "googlecalendar" | "googledrive";
 
 export interface AgentToolParam {
   type: "string" | "number" | "boolean";
@@ -16,6 +19,9 @@ export interface AgentToolSpec {
   commandId?: string;
 
   handoff?: "schedule" | "add-customer" | "client-brief";
+
+  /** kind "connector": the app the tool runs in, as the advisor. */
+  connector?: ConnectorApp;
 }
 
 export const AGENT_TOOLS: AgentToolSpec[] = [
@@ -253,6 +259,59 @@ export const AGENT_TOOLS: AgentToolSpec[] = [
       "Open a client's profile and read out a full brief on them. USE THIS when they want depth on one person: 'tell me about Rahul', 'brief me on Sofia', 'open Jenal's profile', 'walk me through number two'. For a single fact (just their stage, just their city) use get_client instead — this one navigates.",
     parameters: { client: { type: "string", description: "Client full or partial name." } },
     required: ["client"],
+  },
+
+  {
+    name: "send_email",
+    kind: "connector",
+    connector: "gmail",
+    description:
+      "Send an email from the advisor's own Gmail. USE THIS for: email/mail/write to/send Rahul the brochure, 'drop Sofia a line'. Name the client in `client` and the address is looked up for you — never ask for or invent an email address. Write the subject and the full body yourself, short and professional, signed with the advisor's name. It SENDS NOTHING YET: a draft card appears on their screen and THEY tap Send. Tell them in one short line to check it and tap Send. Never say it was sent. If it returns needsConnection, tell them to tap Connect on screen.",
+    parameters: {
+      client: { type: "string", description: "The client's name, e.g. 'Rahul Verma'. Use this OR `to`." },
+      to: { type: "string", description: "An email address the advisor dictated, only if it is not a client." },
+      subject: { type: "string", description: "Subject line." },
+      body: { type: "string", description: "Full plain-text email body." },
+    },
+    required: ["subject", "body"],
+  },
+  {
+    name: "create_calendar_event",
+    kind: "connector",
+    connector: "googlecalendar",
+    description:
+      "Add an event to the advisor's own Google Calendar and invite a client. USE THIS for: put/add/block a site visit, call or meeting in my calendar, 'add Rahul on Friday at 4'. This is NOT for booking a Propley presentation — that is schedule_presentation. Resolve relative dates yourself into a local ISO date-time. It ADDS NOTHING YET: an event card appears on their screen and THEY tap Add. Tell them in one short line to check it and tap Add. Never say it was added. If it returns needsConnection, tell them to tap Connect on screen.",
+    parameters: {
+      title: { type: "string", description: "Event title, e.g. 'Site visit with Rahul Verma'." },
+      start_time: { type: "string", description: "Local start, ISO 8601 without offset, e.g. '2026-11-21T16:00:00'." },
+      duration_minutes: { type: "number", description: "Length in minutes. Default 60." },
+      client: { type: "string", description: "Client to invite, by name. Their address is looked up for you." },
+      location: { type: "string", description: "Where, if they said." },
+      description: { type: "string", description: "A line of notes, if useful." },
+    },
+    required: ["title", "start_time"],
+  },
+  {
+    name: "list_calendar_events",
+    kind: "connector",
+    connector: "googlecalendar",
+    description:
+      "Read the advisor's own Google Calendar. USE THIS for: what's on my calendar, am I free on Friday, what do I have tomorrow. For Propley presentations use list_meetings instead. Without dates it covers the next 7 days.",
+    parameters: {
+      from: { type: "string", description: "Start of the range, ISO date or date-time. Default now." },
+      to: { type: "string", description: "End of the range, ISO date or date-time. Default 7 days after `from`." },
+    },
+  },
+  {
+    name: "find_drive_file",
+    kind: "connector",
+    connector: "googledrive",
+    description:
+      "Find a file in the advisor's Google Drive by name, e.g. a brochure, floor plan or price sheet. Returns names and links. A link only opens for people the file is shared with.",
+    parameters: {
+      query: { type: "string", description: "Words from the file name, e.g. 'Lodha brochure'." },
+    },
+    required: ["query"],
   },
 ];
 
