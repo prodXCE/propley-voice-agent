@@ -108,3 +108,25 @@ export function resolveLanguage(detected: string | null | undefined, text: strin
   if (!text.trim()) return tag;
   return agreesWithScript(tag, text) ? tag : script;
 }
+
+/** Common Hindi words as typed in English letters. Kept to words that are not also common English words. */
+const ROMAN_HINDI = new Set([
+  "hai", "hain", "tha", "thi", "kya", "kyun", "kyon", "kaise", "kab", "kahan", "kaun", "kitna", "kitne", "kitni",
+  "nahi", "nahin", "mujhe", "mera", "meri", "mere", "humko", "hume", "hamara", "aap", "aapka", "aapko", "tum",
+  "uska", "uske", "uski", "unka", "unke", "unki", "ka", "ki", "ke", "ko", "mein", "se", "pe", "aur", "bhi", "ye",
+  "yeh", "wo", "woh", "karo", "karna", "karke", "batao", "bataiye", "chahiye", "raha", "rahi", "rahe", "abhi",
+  "kal", "parso", "wala", "wali", "liye", "kuch", "sab", "bahut", "accha", "achha", "theek", "thik", "haan",
+]);
+
+/**
+ * The language of text the advisor TYPED (no speech recognizer to ask). An Indian script settles it. Hindi in
+ * English letters counts when at least two words, and 30% of all words, are common Hindi words. Null means it
+ * reads as English.
+ */
+export function typedLanguage(text: string): string | null {
+  const script = ttsLanguageForText(text);
+  if (script !== DEFAULT_TTS_LANGUAGE) return script;
+  const words = text.toLowerCase().match(/[a-z]+/g) ?? [];
+  const hindi = words.filter((w) => ROMAN_HINDI.has(w)).length;
+  return hindi >= 2 && hindi / words.length >= 0.3 ? "hi-IN" : null;
+}

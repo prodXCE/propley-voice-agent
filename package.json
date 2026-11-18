@@ -9,7 +9,8 @@
     "start": "node dist/index.js start",
     "typecheck": "tsc --noEmit",
     "bench:worker": "npm run build && LIVEKIT_AGENT_NAME=propley-bench node dist/index.js dev",
-    "bench": "node scripts/bench.mjs"
+    "bench": "node scripts/bench.mjs",
+    "test": "node --test test/"
   },
   "dependencies": {
     "@livekit/agents": "1.5.1",

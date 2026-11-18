@@ -2,7 +2,7 @@ import { voice, type ChatContext, type ChatChunk, type FlushSentinel, type stt, 
 import type * as sarvam from "@livekit/agents-plugin-sarvam";
 import type { AudioFrame } from "@livekit/rtc-node";
 import type { BrowserBridge } from "./browser-bridge.js";
-import { DEFAULT_TTS_LANGUAGE, languageName, speaksLanguage, ttsLanguageForText } from "./language.js";
+import { DEFAULT_TTS_LANGUAGE, languageName, speaksLanguage, ttsLanguageForText, typedLanguage } from "./language.js";
 import { LanguagePolicy } from "./language-policy.js";
 import { clockLine, SYSTEM_PROMPT } from "./prompt.js";
 import { isMeaningfulUtterance } from "./utterance.js";
@@ -274,6 +274,21 @@ export class PropleyAgent extends voice.Agent {
     } else if (decision.reason) {
       console.log(`[lang] stayed in ${decision.language}: ${decision.reason}`);
     }
+  }
+
+  /**
+   * A typed message never reaches the speech recognizer, so its language is read from the text. Indian scripts and
+   * clear Hindi-in-English-letters switch at once; anything that reads as English goes through the usual checks, so a
+   * short "ok thanks" does not flip a Hindi conversation.
+   */
+  noteTypedLanguage(text: string): string {
+    const typed = typedLanguage(text);
+    const decision = typed
+      ? this.language.force(typed)
+      : this.language.observe({ detected: null, transcript: text, confidence: 1 });
+    if (decision.switched) console.log(`[lang] typed message switched to ${decision.language}`);
+    else if (decision.reason) console.log(`[lang] stayed in ${decision.language}: ${decision.reason}`);
+    return decision.language;
   }
 
   async sttNode(

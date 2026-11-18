@@ -236,6 +236,12 @@ export default defineAgent({
       room: ctx.room,
       inputOptions: {
         noiseCancellation: BackgroundVoiceCancellation(),
+        // Typed chat (lk.chat): same as LiveKit's default, plus reading the language off the text.
+        textInputCallback: (sess, ev) => {
+          turn.heard(ev.text, agent.noteTypedLanguage(ev.text));
+          sess.interrupt();
+          sess.generateReply({ userInput: ev.text });
+        },
       },
     });
 

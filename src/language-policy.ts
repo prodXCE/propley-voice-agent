@@ -45,6 +45,15 @@ export class LanguagePolicy {
     return this.allowed === null || this.allowed.has(language);
   }
 
+  /** Switches outright, without the word-count and confidence checks: for typed text, where nothing is misheard. */
+  force(language: string): LanguageDecision {
+    if (!this.permitted(language)) return { language: this.current, switched: false, reason: `${language} is not a language we serve` };
+    const switched = language !== this.current;
+    this.current = language;
+    this.established.add(language);
+    return { language, switched };
+  }
+
   observe(evidence: LanguageEvidence): LanguageDecision {
     const transcript = evidence.transcript ?? "";
     const words = transcript.trim().split(/\s+/).filter(Boolean).length;
