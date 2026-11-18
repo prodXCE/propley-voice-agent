@@ -121,7 +121,14 @@ const NAME_CONVERSATIONS = [
   ],
   [
     { lang: "hi-IN", text: "एक नया क्लाइंट जोड़ो, नाम है Tapaswin.", check: notTapaswan, what: "add_customer, not as Tapaswan" },
-    { lang: "hi-IN", text: "हाँ, कर दो।", check: (calls) => calls.some((c) => c.name === "confirm_action"), what: "confirm_action" },
+    // A bare "हाँ" was once dropped as noise, leaving the agent silent.
+    { lang: "hi-IN", text: "हाँ।", check: (calls) => calls.some((c) => c.name === "confirm_action"), what: "confirm_action" },
+    {
+      lang: "en-IN",
+      text: "Okay, and how many clients do I have in total?",
+      check: (_calls, turn) => Boolean(turn?.said) && !/[\u0900-\u097F]/.test(turn.said),
+      what: "a reply in English after Hindi",
+    },
   ],
 ];
 
@@ -365,7 +372,7 @@ if (SCENARIO === "names") {
     const turns = workerTurns(roomName);
     for (const [i, u] of conversation.entries()) {
       const calls = toolCalls.filter((x) => x.turn === i);
-      const ok = u.check(calls);
+      const ok = u.check(calls, turns[i]);
       checked++;
       if (ok) passed++;
       console.log(`  said : ${u.text}\n  heard: ${turns[i]?.heard ?? "(nothing)"}\n  agent: ${turns[i]?.said ?? "(nothing)"}`);

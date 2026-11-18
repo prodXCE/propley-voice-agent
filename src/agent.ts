@@ -5,7 +5,7 @@ import type { BrowserBridge } from "./browser-bridge.js";
 import { DEFAULT_TTS_LANGUAGE, languageName, speaksLanguage, ttsLanguageForText, typedLanguage } from "./language.js";
 import { LanguagePolicy } from "./language-policy.js";
 import { clockLine, SYSTEM_PROMPT } from "./prompt.js";
-import { isMeaningfulUtterance } from "./utterance.js";
+import { endsWithQuestion, isMeaningfulUtterance } from "./utterance.js";
 import { stripSelfEcho } from "./echo.js";
 import { stripGrovel, stripPlumbing } from "./grovel.js";
 import { introducesName, snapEmailDomains, snapToVocabulary } from "./vocab.js";
@@ -428,7 +428,7 @@ export class PropleyAgent extends voice.Agent {
     this.turn.agentSaid = agentReplies(chatCtx);
     this.budget.reset();
 
-    if (!isMeaningfulUtterance(userText)) {
+    if (!isMeaningfulUtterance(userText, endsWithQuestion(this.turn.agentSaid))) {
       console.log(`[skip] ignoring non-utterance: ${JSON.stringify(userText)}`);
       return null;
     }
@@ -470,7 +470,11 @@ export class PropleyAgent extends voice.Agent {
 
     const needsGrounding = isDataQuestion(userText) && !hasToolOutput;
 
-    const switched = spoken !== this.answeredIn;
+    // The last reply was in another language (the model drifted, or the policy lagged): the model tends to carry
+    // it on, so this turn gets the same language check as a switch.
+    const lastReply = chatCtx.items.findLast((i) => i.type === "message" && i.role === "assistant");
+    const drifted = lastReply?.type === "message" && !speaksLanguage(lastReply.textContent ?? "", spoken);
+    const switched = spoken !== this.answeredIn || drifted;
 
     // A switch turn is held back for a language check anyway, so start the corrective call now
     // rather than after the check fails (it would add a full LLM round trip). Unused if not needed.

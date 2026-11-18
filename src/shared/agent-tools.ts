@@ -134,7 +134,7 @@ export const AGENT_TOOLS: AgentToolSpec[] = [
     name: "set_client_section",
     kind: "action",
     commandId: "set-client-section",
-    description: "Switch the active section on an open client profile.",
+    description: "Switch the active section on an open client profile. Only for a client profile, never for the calendar.",
     parameters: {
       section: {
         type: "string",
@@ -143,6 +143,19 @@ export const AGENT_TOOLS: AgentToolSpec[] = [
       },
     },
     required: ["section"],
+  },
+
+  {
+    name: "set_calendar_view",
+    kind: "action",
+    commandId: "set-calendar-view",
+    description:
+      "Switch the presentations calendar to a day, week or month view, and/or show a date. USE THIS for: 'day view', 'show me the week', 'कैलेंडर को डे में बदलो', 'go to the 21st on the calendar'. Opens the calendar if it is not open. Resolve relative dates ('tomorrow', '21 तारीख') yourself.",
+    parameters: {
+      view: { type: "string", description: "Calendar view.", enum: ["day", "week", "month"] },
+      date: { type: "string", description: "Optional date to show, as YYYY-MM-DD. Leave out to keep the date on screen." },
+    },
+    required: ["view"],
   },
 
   {
