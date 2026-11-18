@@ -27,6 +27,30 @@ const CONCRETE_FACT_RE = new RegExp(
 const HEDGE_RE =
   /\b(i don'?t (have|know)|i can'?t (see|find|look)|not sure|no (presentations|clients|meetings)|nothing|couldn'?t find|let me (check|look)|मुझे नहीं|पता नहीं)\b/i;
 
+/** "Spell it back", "repeat that", "what did I say", "confirm": answered from the conversation, not a lookup. */
+const RECALL_RE = new RegExp(
+  [
+    "\\b(repeat|spell)",
+    "\\bread (it |that |them |those |the \\w+ )?back",
+    "\\bsay (it|that) again",
+    "\\bconfirm (back|what|that you (got|have|received|heard))",
+    "\\bwhat did (i|you) (just )?(say|tell|give|spell)",
+    "\\b(i|you) just (said|told|gave|spelled|spelt)",
+    "फिर से|दोबारा|दोहरा",
+  ].join("|"),
+  "i",
+);
+
+export function asksToRecall(text: string): boolean {
+  return RECALL_RE.test(text);
+}
+
+/** What the conversation already holds: `said` = the agent's earlier replies and tool results; `heard` = the advisor's words. */
+export interface ConversationEvidence {
+  said: string;
+  heard: string;
+}
+
 export function isDataQuestion(text: string): boolean {
   return DATA_QUESTION_RE.test(text);
 }
@@ -55,18 +79,22 @@ const NOT_A_CLAIM = new Set([
 
 const STAGE_WORDS = /\b(inquiry|enquiry|negotiation|offer|closed won|closed lost|vsv)\b/gi;
 
-function claims(replyText: string): string[] {
-  const out: string[] = [];
+const EMAIL_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
 
-  for (const number of replyText.match(/\d+/g) ?? []) out.push(number);
+/** The checkable facts in a reply: numbers apart, because the advisor's own numbers are not evidence. */
+function claims(replyText: string): { numbers: string[]; words: string[] } {
+  const emails = replyText.match(EMAIL_RE) ?? [];
+  const rest = replyText.replace(EMAIL_RE, " ");
+  const numbers = rest.match(/\d+/g) ?? [];
+  const words: string[] = [...emails];
 
-  for (const word of replyText.match(/\b[A-Z][a-z]{2,}\b/g) ?? []) {
-    if (!NOT_A_CLAIM.has(word.toLowerCase())) out.push(word);
+  for (const word of rest.match(/\b[A-Z][a-z]{2,}\b/g) ?? []) {
+    if (!NOT_A_CLAIM.has(word.toLowerCase())) words.push(word);
   }
 
-  for (const stage of replyText.match(STAGE_WORDS) ?? []) out.push(stage);
+  for (const stage of rest.match(STAGE_WORDS) ?? []) words.push(stage);
 
-  return out;
+  return { numbers, words };
 }
 
 const MONTHS =
@@ -74,15 +102,20 @@ const MONTHS =
 
 const canonical = (text: string) => text.toLowerCase().replace(MONTHS, (month) => month.slice(0, 3));
 
-export function supportedByScreen(replyText: string, context: string | null): boolean {
-  if (!context) return false;
+/**
+ * Every fact in the reply is already on screen or in the conversation. Names and email addresses may come from
+ * what the advisor said (they dictated them); numbers must come from the screen, a tool or the agent's own earlier
+ * replies — "THE ADVISOR IS NOT A SOURCE" of figures about their data.
+ */
+export function supported(replyText: string, screen: string | null, evidence?: ConversationEvidence): boolean {
+  const { numbers, words } = claims(replyText);
+  if (numbers.length === 0 && words.length === 0) return false;
 
-  const haystack = canonical(context);
-  const asserted = claims(replyText);
-
-  if (asserted.length === 0) return false;
-
-  return asserted.every((claim) => haystack.includes(canonical(claim)));
+  const trusted = canonical([screen ?? "", evidence?.said ?? ""].join("\n"));
+  const withAdvisor = canonical([screen ?? "", evidence?.said ?? "", evidence?.heard ?? ""].join("\n"));
+  return (
+    numbers.every((n) => trusted.includes(n)) && words.every((w) => withAdvisor.includes(canonical(w)))
+  );
 }
 
 export function isUngrounded(params: {
@@ -91,11 +124,13 @@ export function isUngrounded(params: {
   calledTool: boolean;
   hasToolOutput: boolean;
   screen?: string | null;
+  evidence?: ConversationEvidence;
 }): boolean {
   if (params.calledTool || params.hasToolOutput) return false;
+  if (asksToRecall(params.userText)) return false;
   if (!isDataQuestion(params.userText)) return false;
   if (!statesConcreteFact(params.replyText)) return false;
-  return !supportedByScreen(params.replyText, params.screen ?? null);
+  return !supported(params.replyText, params.screen ?? null, params.evidence);
 }
 
 export const RETRY_INSTRUCTION =

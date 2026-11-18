@@ -8,6 +8,9 @@
  *   npm run bench:worker                      # terminal 1: local worker, explicit dispatch only
  *   node scripts/bench.mjs [--rounds 3] [--agent propley-bench] [--out file.json]
  *   node scripts/bench.mjs --auto             # no dispatch: whatever auto-dispatched worker joins (prod)
+ *   node scripts/bench.mjs --scenario email --log <worker log>
+ *                                             # dictated email addresses through real STT: is the address heard,
+ *                                             # remembered, corrected and spelled back right? (local worker only)
  *
  * Worker-side numbers: run scripts/turn-report.py over the worker's log.
  */
@@ -30,6 +33,8 @@ const ROUNDS = Number(arg("rounds", "3"));
 const AUTO = process.argv.includes("--auto");
 const AGENT_NAME = arg("agent", "propley-bench");
 const OUT = arg("out", null);
+const SCENARIO = arg("scenario", null);
+const WORKER_LOG = arg("log", null);
 
 const RATE = 16000;
 const FRAME = RATE / 100; // 10 ms
@@ -49,6 +54,36 @@ const UTTERANCES = [
   { lang: "hi-IN", text: "रोहन कपूर का deal stage क्या है?" },
   { lang: "en-IN", text: "Okay, thanks. How many clients do I have in total?" },
 ];
+
+// Dictation conversations (--scenario email): one call each. `expect` = the address that turn must produce,
+// either spelled back by the agent or passed to send_email. Only reaches the fake browser: nothing is sent.
+const EMAIL_CONVERSATIONS = [
+  [
+    { lang: "en-IN", text: "Can you send an email to a new contact for me?" },
+    { lang: "en-IN", text: "Their email is rohan dot mehra at kestrel dot in. Tell them the site visit is on Saturday at eleven.", expect: "rohan.mehra@kestrel.in" },
+    { lang: "en-IN", text: "Yes, that's right.", expect: "rohan.mehra@kestrel.in" },
+    { lang: "en-IN", text: "Actually, change it. It's r o h a n m, at kestrel dot in.", expect: "rohanm@kestrel.in" },
+    { lang: "en-IN", text: "Yes.", expect: "rohanm@kestrel.in" },
+  ],
+  [
+    { lang: "en-IN", text: "Email Sneha the Palm Grove brochure. Her address is s n e h a dot k at q u v a dot in.", expect: "sneha.k@quva.in" },
+    { lang: "en-IN", text: "No, the domain is q u v a. Q as in queen. quva dot in.", expect: "sneha.k@quva.in" },
+    { lang: "en-IN", text: "Yes, that's it.", expect: "sneha.k@quva.in" },
+  ],
+  [
+    { lang: "hi-IN", text: "Vikram ko email bhejna hai. Uska email hai vikram dot shah at kestrel dot in. Bolo ki Monday ko call karenge.", expect: "vikram.shah@kestrel.in" },
+    { lang: "hi-IN", text: "Haan, sahi hai.", expect: "vikram.shah@kestrel.in" },
+  ],
+];
+
+/** "r-o-h-a-n dot m at kestrel dot in" / "R O H A N.M@kestrel.in" -> "rohan.m@kestrel.in" */
+function normalizeAddress(text) {
+  return String(text)
+    .toLowerCase()
+    .replace(/\s+(dot|डॉट)\s+/g, ".")
+    .replace(/\s+(at|एट)\s+/g, "@")
+    .replace(/[\s,\-–—'"]/g, "");
+}
 
 // ---- fake browser -------------------------------------------------------------------------
 const CLIENTS = [
@@ -90,6 +125,8 @@ function toolResult(name, args) {
     case "get_client":
     case "client_brief":
       return { ...client, email: "client@example.com", phone: "+91 90000 00000", notes: ["Prefers sea-facing units", "Budget around 4 crore"] };
+    case "send_email":
+      return { awaitingApproval: true, note: "The draft is on their screen with Send and Cancel buttons. Tell them in one short line to check it and tap Send. It has NOT happened yet." };
     case "navigate":
       return { page: String(args?.page ?? "Presentations"), counts: { total: MEETINGS.length } };
     default:
@@ -132,7 +169,7 @@ const pct = (xs, p) => {
 };
 
 // ---- one call -----------------------------------------------------------------------------
-async function runCall(round, clips) {
+async function runCall(round, clips, utterances = UTTERANCES) {
   const roomName = `propley-bench-${randomBytes(4).toString("hex")}`;
   const at = new AccessToken(process.env.LIVEKIT_API_KEY, process.env.LIVEKIT_API_SECRET, { identity: "bench-advisor", name: "Dev Advisor" });
   at.addGrant({ roomJoin: true, room: roomName, canPublish: true, canSubscribe: true });
@@ -156,9 +193,14 @@ async function runCall(round, clips) {
   await room.connect(process.env.LIVEKIT_URL, await at.toJwt(), { autoSubscribe: true, dynacast: false });
   const local = room.localParticipant;
   local.registerRpcMethod("context.get", async () => JSON.stringify(PAGE));
-  local.registerRpcMethod("vocabulary.get", async () => JSON.stringify({ terms: VOCABULARY }));
+  // Email domains of the fake CRM's contacts, as the real browser sends them (the dictation scenario's
+  // addresses are at these known domains).
+  local.registerRpcMethod("vocabulary.get", async () => JSON.stringify({ terms: VOCABULARY, domains: ["kestrel.in", "quva.in"] }));
+  const toolCalls = []; // { turn, name, args } — which utterance each call answered
+  let turnIndex = -1;
   local.registerRpcMethod("tool.execute", async (d) => {
     const { name, args } = JSON.parse(d.payload);
+    toolCalls.push({ turn: turnIndex, name, args });
     return JSON.stringify({ ok: true, result: toolResult(name, args) });
   });
   local.registerRpcMethod("wizard.input", async () => JSON.stringify({ prompt: "Okay.", done: true }));
@@ -210,8 +252,9 @@ async function runCall(round, clips) {
     await waitFor(() => state() === "listening", 30_000);
 
     const results = [];
-    for (const [i, u] of UTTERANCES.entries()) {
+    for (const [i, u] of utterances.entries()) {
       await sleep(1200);
+      turnIndex = i;
       heardAt.roomio_audio = 0;
       heardAt.background_audio = 0;
       speechEndsAt = 0;
@@ -235,7 +278,7 @@ async function runCall(round, clips) {
       results.push(r);
       console.log(`  [${round}.${r.n}] reply ${r.replyMs ?? "-"} ms  filler ${r.fillerMs ?? "-"} ms  ${u.text}`);
     }
-    return results;
+    return SCENARIO ? { roomName, results, toolCalls } : results;
   } finally {
     pumping = false;
     await pump.catch(() => {});
@@ -244,6 +287,37 @@ async function runCall(round, clips) {
 }
 
 // ---- main ---------------------------------------------------------------------------------
+if (SCENARIO === "email") {
+  if (!WORKER_LOG) throw new Error("--scenario email needs --log <the local worker's log file> to read what was heard and said");
+  let passed = 0, checked = 0;
+  for (const [c, conversation] of EMAIL_CONVERSATIONS.entries()) {
+    const convClips = [];
+    for (const u of conversation) convClips.push(await utteranceAudio(u));
+    console.log(`\nconversation ${c + 1}:`);
+    const { roomName, toolCalls } = await runCall(c + 1, convClips, conversation);
+    await sleep(1500); // let the worker flush its last turn line
+    const turns = readFileSync(WORKER_LOG, "utf8")
+      .split("\n")
+      .filter((l) => l.includes('"evt":"turn"') && l.includes(`"room":"${roomName}"`))
+      .map((l) => JSON.parse(l.slice(l.indexOf("{"))))
+      .filter((t) => t.heard); // skip the greeting
+    for (const [i, u] of conversation.entries()) {
+      const t = turns[i] ?? {};
+      const sent = toolCalls.filter((x) => x.turn === i && x.name === "send_email").map((x) => String(x.args?.to ?? ""));
+      console.log(`  said : ${u.text}`);
+      console.log(`  heard: ${t.heard ?? "(nothing)"}`);
+      console.log(`  agent: ${t.said ?? "(nothing)"}${sent.length ? `   [send_email to ${sent.join(", ")}]` : ""}`);
+      if (!u.expect) continue;
+      checked++;
+      const ok = normalizeAddress(t.said ?? "").includes(u.expect) || sent.some((to) => to.toLowerCase() === u.expect);
+      if (ok) passed++;
+      console.log(`  ${ok ? "PASS" : "FAIL"}  expected ${u.expect}`);
+    }
+  }
+  console.log(`\n${passed}/${checked} address checks passed`);
+  process.exit(0);
+}
+
 const clips = [];
 for (const u of UTTERANCES) clips.push(await utteranceAudio(u));
 console.log(`bench: ${UTTERANCES.length} utterances x ${ROUNDS} rounds, ${AUTO ? "auto-dispatch" : `explicit dispatch to "${AGENT_NAME}"`}`);

@@ -77,17 +77,17 @@ async function buildGreeting(bridge: BrowserBridge): Promise<string> {
   }
 }
 
-function buildStt(vocabulary: string[]) {
+function buildStt(vocabulary: string[], domains: string[] = []) {
   if (STT_PROVIDER === "sarvam") {
+    const hints = [
+      vocabulary.length > 0 ? `Names and projects that may be spoken: ${vocabulary.join(", ")}.` : "",
+      domains.length > 0 ? `Email domains that may be spoken: ${domains.join(", ")}.` : "",
+    ].filter(Boolean);
     return new sarvam.STT({
       model: SARVAM_STT_MODEL,
       mode: SARVAM_STT_MODE,
       languageCode: SARVAM_STT_LANGUAGE,
-      ...(vocabulary.length > 0
-        ? {
-            prompt: `Names and projects that may be spoken: ${vocabulary.join(", ")}. Transcribe these exactly as written.`,
-          }
-        : {}),
+      ...(hints.length > 0 ? { prompt: `${hints.join(" ")} Transcribe these exactly as written.` } : {}),
     });
   }
 
@@ -160,8 +160,8 @@ export default defineAgent({
     console.log(`[boot] participant joined ${since()}`);
     const bridge = new BrowserBridge(ctx.room, participant.identity);
 
-    const vocabulary = await bridge.vocabulary();
-    console.log(`[boot] vocabulary: ${vocabulary.length} terms ${since()}`);
+    const { terms: vocabulary, domains } = await bridge.vocabulary();
+    console.log(`[boot] vocabulary: ${vocabulary.length} terms, ${domains.length} email domains ${since()}`);
 
     const tts = buildTts();
 
@@ -196,7 +196,7 @@ export default defineAgent({
         },
       },
       vad: ctx.proc.userData.vad as silero.VAD,
-      stt: buildStt(vocabulary),
+      stt: buildStt(vocabulary, domains),
       llm: buildLlm(),
       tts,
     });
@@ -241,7 +241,7 @@ export default defineAgent({
 
     bridge.onRpc = (timing) => turn.rpcDone(timing);
 
-    const agent = new PropleyAgent(bridge, tts, vocabulary, VOICE_LANGUAGES);
+    const agent = new PropleyAgent(bridge, tts, vocabulary, VOICE_LANGUAGES, domains);
     agent.onStep = (step) => turn.step(step);
 
     const fillerCache = ctx.proc.userData.fillers as FillerCache;
