@@ -35,6 +35,7 @@ import {
   FILLER_MIN_GAP_MS,
   GREETING,
   LLM_DEADLINE_MS,
+  LLM_PRIMARY_COOLDOWN_MS,
   LLM_HEDGE_MS,
   SLOW_TOOL_MS,
   VAD_MIN_SILENCE_MS,
@@ -159,6 +160,7 @@ function buildLlm(): HedgedLLM {
   return new HedgedLLM(gemini(VERTEX_LOCATION), backup, {
     hedgeMs: LLM_HEDGE_MS,
     deadlineMs: LLM_DEADLINE_MS,
+    cooldownMs: LLM_PRIMARY_COOLDOWN_MS,
     streamTimeoutMs: 20_000,
   });
 }

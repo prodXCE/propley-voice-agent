@@ -45,6 +45,9 @@ const DESTRUCTIVE = new Set([
 
 const MAX_CALLS_PER_TURN = 4;
 
+/** Held for a yes by the browser, but saved at once here: internal, and a fix is one more call. */
+const SAVE_AT_ONCE = new Set(["add_customer", "rename_client", "set_deal_stage"]);
+
 /** Tools that hold a change for a spoken yes. Only one can wait at a time: a second would replace the first. */
 const STAGING = new Set([
   "cancel_presentation",
@@ -95,7 +98,13 @@ export interface TurnFacts {
   agentSaid: string;
   /** This turn was typed, not spoken (nothing to mishear). */
   typed: boolean;
+  /** The advisor's last few messages, this one included. */
+  userSaid?: string;
 }
+
+// "His email ID is …" once became an email nobody asked for, with a made-up body. A send needs one of these
+// in their recent messages or in the agent's offer they answered ("want me to email him?").
+const SEND_RE = /\b(send|sent|mail|write|drop|shoot|reply|forward)\b|\be-?mail (him|her|them|it|to|back)\b|भेज|bhej|likh|लिख|जवाब|jawab/i;
 
 let callSeq = 0;
 
@@ -170,16 +179,24 @@ export function buildTools(
         };
       }
 
-      const to = String((args as { to?: unknown } | null)?.to ?? "");
+      if ((spec.name === "send_email" || spec.name === "reply_to_email") && !facts().typed && !SEND_RE.test(facts().userSaid ?? lastUserText()) && !SEND_RE.test(lastAgentLine)) {
+        console.warn(`[guard] ${spec.name} nobody asked for: ${JSON.stringify(lastUserText())}`);
+        return {
+          error:
+            "Nothing was sent. They did not ask you to send an email. If they gave a client's email address, phone or city, save it on that client with add_customer (their saved name plus the detail). Otherwise ask what they want.",
+        };
+      }
+
+      const to = String((args as { to?: unknown; email?: unknown } | null)?.[spec.name === "add_customer" ? "email" : "to"] ?? "");
       if (spec.name === "send_email" && !to.includes("@") && DICTATED_ADDRESS_RE.test(lastUserText())) {
         console.warn(`[guard] address dictated but not used: ${JSON.stringify(lastUserText())}`);
         return { error: dictatedAddressInstruction(lastUserText()) };
       }
-      if (spec.name === "send_email" && to.includes("@") && !facts().typed && !readBack(to, facts().agentSaid)) {
+      if ((spec.name === "send_email" || spec.name === "add_customer") && to.includes("@") && !facts().typed && !readBack(to, facts().agentSaid)) {
         console.warn(`[guard] dictated address not read back yet: ${JSON.stringify(to)}`);
         return {
           error:
-            `Read the address back to them now, in your own reply and in their language, keeping the letters as English letters: "${spellOut(to)}", and ask if it is right. Do not ask them to spell it. Call send_email again only after they say yes. (Internal: speech recognition often mishears spelled addresses; nothing is drafted yet. Don't mention either.)`,
+            `Read the address back to them now, in your own reply and in their language, keeping the letters as English letters: "${spellOut(to)}", and ask if it is right. Do not ask them to spell it. Call ${spec.name} again only after they say yes. (Internal: speech recognition often mishears spelled addresses; nothing is drafted yet. Don't mention either.)`,
         };
       }
 
@@ -201,6 +218,20 @@ export function buildTools(
 
       const raw = await bridge.executeTool(spec.name, (args ?? {}) as Record<string, unknown>);
       console.log(`[tool] ${spec.name} -> ${JSON.stringify(raw).slice(0, 120)}`);
+
+      // CRM edits that stay inside Propley save at once and are said back: asking "add him?" before every one of
+      // them was the engineer's main complaint (Nov 2026). Anything the client sees still waits for a yes. A new
+      // name that sounds like an existing client (`similar`) still asks.
+      const held = raw as { needsConfirmation?: unknown; similar?: unknown } | null;
+      if (SAVE_AT_ONCE.has(spec.name) && held?.needsConfirmation === true && !held.similar) {
+        const done = await bridge.executeTool("confirm_action", { confirm: true });
+        console.log(`[tool] ${spec.name} saved at once -> ${JSON.stringify(done).slice(0, 120)}`);
+        if ((done as { ok?: unknown } | null)?.ok !== true) return done;
+        return {
+          ...(done as object),
+          note: "Already saved; do not ask for a yes. Say in one line what was saved, the name exactly as saved. If they say it is wrong, fix it with another call.",
+        };
+      }
 
       if (CONTACT_BEARING.has(spec.name) && !asksForContact(lastUserText())) {
         return withoutContact(raw);

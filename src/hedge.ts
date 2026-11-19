@@ -15,6 +15,8 @@ export interface HedgeResult<T> {
   /** The winner's first item; undefined when every candidate ended empty (the winner is then the last). */
   first: T | undefined;
   hedged: boolean;
+  /** Labels of the candidates that failed (errored, not just ended empty) before the winner answered. */
+  failed: string[];
 }
 
 type Outcome<T> =
@@ -37,6 +39,7 @@ export async function raceFirst<T>(
   const timers: ReturnType<typeof setTimeout>[] = [];
   let hedged = false;
   let lastEmpty: Candidate<T> | null = null;
+  const failed: string[] = [];
 
   const watch = (c: Candidate<T>) =>
     live.set(
@@ -68,7 +71,7 @@ export async function raceFirst<T>(
     for (;;) {
       if (live.size === 0) {
         if (startBackupNow()) continue;
-        if (lastEmpty) return { winner: lastEmpty, first: undefined, hedged };
+        if (lastEmpty) return { winner: lastEmpty, first: undefined, hedged, failed };
         throw new HedgeError(`no answer from ${hedged ? "either region" : "the model"}`);
       }
       const elapsed = Date.now() - started;
@@ -82,11 +85,12 @@ export async function raceFirst<T>(
         case "item":
           live.delete(outcome.c);
           closeAll(); // the losers
-          return { winner: outcome.c, first: outcome.value, hedged };
+          return { winner: outcome.c, first: outcome.value, hedged, failed };
         case "empty":
         case "failed":
           live.delete(outcome.c);
           if (outcome.kind === "empty") lastEmpty = outcome.c;
+          else failed.push(outcome.c.label);
           startBackupNow();
           break;
         case "hedge":

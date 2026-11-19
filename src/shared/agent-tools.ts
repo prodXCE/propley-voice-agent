@@ -191,7 +191,7 @@ export const AGENT_TOOLS: AgentToolSpec[] = [
     kind: "action",
     commandId: "set-deal-stage",
     description:
-      "Change a client's deal stage. USE THIS for: 'mark Jenal as closed won', 'they signed', 'we won it', 'we lost that one', 'move Rahul to negotiation', 'she's made an offer'. IT DOES NOT APPLY YET — read the summary back as a question, get a spoken yes, then call confirm_action.",
+      "Change a client's deal stage. USE THIS for: 'mark Jenal as closed won', 'they signed', 'we won it', 'we lost that one', 'move Rahul to negotiation', 'she's made an offer'. It SAVES AT ONCE (no yes needed): say in one line what was saved, the name exactly as saved, so they hear a mistake; a fix is just another call.",
     parameters: {
       client: { type: "string", description: "Client name." },
       stage: {
@@ -256,7 +256,7 @@ export const AGENT_TOOLS: AgentToolSpec[] = [
     kind: "action",
     commandId: "add-customer",
     description:
-      "Add a client to the portfolio. USE THIS for: add a customer/client/lead, 'new lead', 'put someone on my books'. The NAME is the only thing you need — ask for it if they have not said it. Phone, email and city are OPTIONAL: offer to take them, but if the advisor does not have them or wants to skip, go ahead without. Never demand a phone number. It saves NOTHING yet — it reads the change back as a question, and you wait for a spoken yes before calling confirm_action.",
+      "Add a client to the portfolio, or add a phone, email or city to a client you already have (pass their saved name plus the new detail: 'his email is …' right after adding someone means THIS, never send_email). USE THIS for: add a customer/client/lead, 'new lead', 'put someone on my books', 'her number is …'. The NAME is the only thing you need — ask for it if they have not said it. Phone, email and city are OPTIONAL: offer to take them, but if the advisor does not have them or wants to skip, go ahead without. Never demand a phone number. It SAVES AT ONCE (no yes needed): say in one line what was saved, the name exactly as saved, so they hear a mistake; a fix is just another call. Exception: when the result says needsConfirmation (the name sounds like a client they already have), read it back and wait for a yes before confirm_action.",
     parameters: {
       name: { type: "string", description: "Client full name, ALWAYS in English letters, even when they speak Hindi (तपस्विन → Tapaswin)." },
       email: { type: "string", description: "Email if given." },
@@ -269,7 +269,7 @@ export const AGENT_TOOLS: AgentToolSpec[] = [
     kind: "action",
     commandId: "rename-client",
     description:
-      "Change a client's name. USE THIS when a name was saved wrong or misheard: 'it's Tapaswin, not Tapaswan', 'fix the spelling', 'rename Rahul to Rahul Verma'. Pass the name as it is saved now in `client`. It changes NOTHING yet — read the summary back as a question and wait for a yes before confirm_action.",
+      "Change a client's name. USE THIS when a name was saved wrong or misheard: 'it's Tapaswin, not Tapaswan', 'fix the spelling', 'rename Rahul to Rahul Verma'. Pass the name as it is saved now in `client`. It SAVES AT ONCE (no yes needed): say in one line what was saved, the name exactly as saved, so they hear a mistake; a fix is just another call.",
     parameters: {
       client: { type: "string", description: "The client's name as currently saved." },
       new_name: { type: "string", description: "The correct full name, in English letters (तपस्विन → Tapaswin)." },

@@ -21,3 +21,11 @@ test("unknown, well-known and differently-ended domains are left alone", () => {
   assert.equal(snapEmailDomains("no address here, see you at castrel dot", known), "no address here, see you at castrel dot");
   assert.equal(snapEmailDomains("a@castrel.in", []), "a@castrel.in");
 });
+
+test("a short company domain said as one syllable is snapped to the known one", () => {
+  const ours = ["auum.in", "quva.in"];
+  for (const heard of ["om", "AWM", "aoum", "aum", "ohm"]) assert.equal(snapEmailDomains(`ashish.roy@${heard}.in`, ours), "ashish.roy@auum.in");
+  assert.equal(snapEmailDomains("x@kava.in", ours), "x@kava.in");
+  assert.equal(snapEmailDomains("x@221.com", ours), "x@221.com");
+  assert.equal(snapEmailDomains("x@om.com", ours), "x@om.com"); // a different ending is a different domain
+});

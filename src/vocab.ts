@@ -252,7 +252,7 @@ export function snapEmailDomains(text: string, domains: string[]): string {
       if (`.${rest.join(".")}` !== end) continue; // same ending (.in, .co.in) or no match
       const key = sttKey(name);
       const score = similarity(key, heardKey);
-      if (!acceptable(name, label, key, score)) continue;
+      if (!acceptable(name, label, key, score) && !soundsLikeShort(name, label)) continue;
       if (!best || score > best.score) best = { domain, score };
     }
     return best ? `@${best.domain}` : match;
@@ -265,6 +265,16 @@ export function snapEmailDomains(text: string, domains: string[]): string {
  * Longer keys are distinctive enough for looser letters ("castrail" -> "kestrel"). Devanagari can't be compared
  * letter by letter, so it needs an exact key.
  */
+/**
+ * Short names said as one syllable: "auum" is said like "om" and comes back as "om", "awm", "aum" or "aoum". Those
+ * match on consonants alone ("m"); "kava" vs "quva" still doesn't ("kv" vs "qv").
+ */
+function soundsLikeShort(name: string, heard: string): boolean {
+  if (heard.length > 4 || name.length > 5 || !/^[a-z]+$/i.test(heard)) return false;
+  const consonants = (w: string) => w.toLowerCase().replace(/[aeiouwhy]/g, "");
+  return consonants(name).length > 0 && consonants(name) === consonants(heard);
+}
+
 function acceptable(name: string, heard: string, key: string, score: number): boolean {
   if (isIndic(heard)) return score === 1 && key.length >= 3;
   if (key.length < 4) return score === 1 && similarity(name, heard.toLowerCase()) >= 0.6;

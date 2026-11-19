@@ -212,6 +212,15 @@ function agentReplies(chatCtx: ChatContext): string {
     .join("\n");
 }
 
+/** The advisor's last `count` messages, this one included. */
+function userLines(chatCtx: ChatContext, count = 6): string {
+  return chatCtx.items
+    .filter((i) => i.type === "message" && i.role === "user")
+    .slice(-count)
+    .map((i) => (i.type === "message" ? (i.textContent ?? "") : ""))
+    .join("\n");
+}
+
 /** The last few exchanges as plain lines, for a retry that cannot carry the history itself. */
 function recentTranscript(chatCtx: ChatContext, messages = 8): string {
   const lines: string[] = [];
@@ -305,7 +314,7 @@ function replaceLastUserText(chatCtx: ChatContext, text: string): void {
 export class PropleyAgent extends voice.Agent {
   private ttsLanguage: string | null = null;
   private lastContext: string | null = null;
-  private readonly turn: { text: string; agentSaid: string; spoken: string; typed: boolean };
+  private readonly turn: { text: string; agentSaid: string; spoken: string; typed: boolean; userSaid: string };
   private readonly budget: TurnBudget;
   private readonly language: LanguagePolicy;
 
@@ -332,12 +341,12 @@ export class PropleyAgent extends voice.Agent {
     /** The advisor's previous session (previous.ts), or "". */
     private readonly previous: string = "",
   ) {
-    const turn = { text: "", agentSaid: "", spoken: "", typed: false };
+    const turn = { text: "", agentSaid: "", spoken: "", typed: false, userSaid: "" };
     const budget = newTurnBudget();
     super({
       instructions: SYSTEM_PROMPT,
       allowInterruptions: true,
-      tools: buildTools(bridge, () => turn.text, budget, () => ({ agentSaid: `${turn.agentSaid}\n${turn.spoken}`, typed: turn.typed })),
+      tools: buildTools(bridge, () => turn.text, budget, () => ({ agentSaid: `${turn.agentSaid}\n${turn.spoken}`, typed: turn.typed, userSaid: turn.userSaid })),
     });
     this.turn = turn;
     this.budget = budget;
@@ -442,6 +451,7 @@ export class PropleyAgent extends voice.Agent {
 
     this.turn.text = userText;
     this.turn.agentSaid = agentReplies(chatCtx);
+    this.turn.userSaid = userLines(chatCtx);
     this.budget.reset();
 
     if (!isMeaningfulUtterance(userText, endsWithQuestion(this.turn.agentSaid))) {

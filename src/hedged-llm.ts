@@ -10,10 +10,13 @@ type ChatOptions = Parameters<llm.LLM["chat"]>[0];
  * backup and then ran a full-prompt "recovery" call in the background.
  */
 export class HedgedLLM extends llm.LLM {
+  /** Until when the backup goes first, after the primary failed (Mumbai's 429 quota errors, Nov 2026). */
+  primaryDownUntil = 0;
+
   constructor(
     readonly primary: llm.LLM,
     readonly backup: llm.LLM | null,
-    readonly opts: { hedgeMs: number; deadlineMs: number; streamTimeoutMs: number },
+    readonly opts: { hedgeMs: number; deadlineMs: number; streamTimeoutMs: number; cooldownMs: number },
   ) {
     super();
     for (const inner of [primary, backup]) {
@@ -81,14 +84,21 @@ class HedgedStream extends llm.LLMStream {
 
     let result;
     try {
+      // After a primary failure the backup goes first for a while (Mumbai is still the hedge), instead of every
+      // turn paying for the failing call first. Mumbai goes first again once the cooldown ends.
+      const backupFirst = backup !== null && Date.now() < this.hedged.primaryDownUntil;
       result = await raceFirst(
-        () => start(primary, "primary"),
-        backup ? () => start(backup, "backup") : null,
+        backupFirst ? () => start(backup, "backup") : () => start(primary, "primary"),
+        backup ? (backupFirst ? () => start(primary, "primary") : () => start(backup, "backup")) : null,
         { hedgeMs: opts.hedgeMs, deadlineMs: opts.deadlineMs, signal: this.abortController.signal },
       );
     } catch (err) {
       if (err instanceof HedgeError && err.message === "aborted") return;
       throw new APIConnectionError({ message: `LLM: ${err instanceof Error ? err.message : String(err)}`, options: { retryable: false } });
+    }
+    if (result.failed.includes("primary") && Date.now() >= this.hedged.primaryDownUntil) {
+      this.hedged.primaryDownUntil = Date.now() + opts.cooldownMs;
+      console.warn(`[llm] primary failed: backup goes first for ${opts.cooldownMs / 1000} s`);
     }
     if (result.hedged) console.warn(`[llm] hedged: ${result.winner.label} answered first`);
 

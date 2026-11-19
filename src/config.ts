@@ -106,6 +106,8 @@ export const SLOW_TOOL_MS = num("SLOW_TOOL_MS", 1500);
 export const LLM_HEDGE_MS = num("LLM_HEDGE_MS", 1100);
 /** No first token from either region by now: fail the call (recovery line) instead of hanging the turn. */
 export const LLM_DEADLINE_MS = num("LLM_DEADLINE_MS", 6000);
+/** After the primary region fails, the backup goes first for this long (then the primary is tried again). */
+export const LLM_PRIMARY_COOLDOWN_MS = num("LLM_PRIMARY_COOLDOWN_MS", 60_000);
 /** After this much of a turn, skip the grounding / language / claim retries and answer with what there is. */
 export const TURN_RETRY_BUDGET_MS = num("TURN_RETRY_BUDGET_MS", 3500);
 

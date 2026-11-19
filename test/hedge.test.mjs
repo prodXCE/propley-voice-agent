@@ -94,3 +94,12 @@ test("an abort closes everything", async () => {
   await assert.rejects(raceFirst(() => (primary = fake("primary", { delayMs: 5000 })), null, { hedgeMs: 1000, deadlineMs: 3000, signal: ac.signal }), /aborted/);
   assert.equal(primary.closed, true);
 });
+
+test("a failed primary is reported, an empty one is not", async () => {
+  const failedRun = await raceFirst(() => fake("primary", { fail: true }), () => fake("backup"), { hedgeMs: 1000, deadlineMs: 3000 });
+  assert.deepEqual(failedRun.failed, ["primary"]);
+  const emptyRun = await raceFirst(() => fake("primary", { items: [] }), () => fake("backup"), { hedgeMs: 1000, deadlineMs: 3000 });
+  assert.deepEqual(emptyRun.failed, []);
+  const fastRun = await raceFirst(() => fake("primary"), () => fake("backup"), { hedgeMs: 1000, deadlineMs: 3000 });
+  assert.deepEqual(fastRun.failed, []);
+});
