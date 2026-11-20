@@ -262,6 +262,18 @@ export const AGENT_TOOLS: AgentToolSpec[] = [
   },
 
   {
+    name: "search_knowledge",
+    kind: "read",
+    description:
+      "Search what was SAID and WRITTEN before: presentation transcripts, the advisor's presentation notes and client notes. USE THIS for anything about what a client said, asked, wanted, liked, worried about or agreed to — 'what did Rahul say about parking?', 'what's Sofia's budget?', 'did Priya ask for a discount?', 'who decides for Arjun?'. Pass `client` whenever they name one. Answer ONLY from the returned text and mention when it was said. If nothing returned answers it, say you have no record of that — never fill the gap.",
+    parameters: {
+      query: { type: "string", description: "The question in their words, e.g. 'what did he say about parking'." },
+      client: { type: "string", description: "Client name, if they named one. The match is phonetic." },
+    },
+    required: ["query"],
+  },
+
+  {
     name: "send_email",
     kind: "connector",
     connector: "gmail",
