@@ -1,4 +1,5 @@
 import {
+  AudioEnergyFilter,
   cli,
   defineAgent,
   inference,
@@ -15,9 +16,11 @@ import { BackgroundVoiceCancellation } from "@livekit/noise-cancellation-node";
 import { fileURLToPath } from "node:url";
 import { PropleyAgent } from "./agent.js";
 import { BrowserBridge } from "./browser-bridge.js";
+import { previousConversation } from "./previous.js";
 import { composeGreeting, type PipelineSnapshot } from "./greeting.js";
-import { FILLER_LANGUAGES, pickFiller } from "./fillers.js";
+import { FILLER_LANGUAGES, holdLine, pickFiller } from "./fillers.js";
 import { FillerCache } from "./filler-cache.js";
+import { HedgedLLM } from "./hedged-llm.js";
 import {
   assertConfigured,
   BACKGROUND_AUDIO_SAMPLE_RATE,
@@ -29,7 +32,14 @@ import {
   ENDPOINTING_MAX_DELAY_MS,
   ENDPOINTING_MIN_DELAY_MS,
   FILLER_DELAY_MS,
+  FILLER_MIN_GAP_MS,
   GREETING,
+  LLM_DEADLINE_MS,
+  LLM_PRIMARY_COOLDOWN_MS,
+  LLM_HEDGE_MS,
+  SLOW_TOOL_MS,
+  VAD_MIN_SILENCE_MS,
+  STT_FLUSH_SILENCE_MS,
   IDLE_PROCESSES,
   DRAIN_TIMEOUT_MS,
   WORKER_PORT,
@@ -77,16 +87,49 @@ async function buildGreeting(bridge: BrowserBridge): Promise<string> {
   }
 }
 
+// Flushing when the Sarvam plugin's 50 ms buffer is exactly empty hands its energy filter an empty frame; the
+// filter's reduce() throws ("Reduce of empty array"), the stream reconnects, and speech meanwhile is lost (a
+// whole question in the bench). An empty frame carries no audio: skip it. shortcut: patches the SDK class;
+// drop it once AudioEnergyFilter handles empty frames upstream.
+const energyPushFrame = AudioEnergyFilter.prototype.pushFrame;
+AudioEnergyFilter.prototype.pushFrame = function (frame) {
+  return frame.samplesPerChannel === 0 ? false : energyPushFrame.call(this, frame);
+};
+
+/**
+ * Sarvam, flushed at the local VAD's end of speech: its own server-side silence detection otherwise holds the
+ * final transcript ~750 ms (the "stt final lag" in turn telemetry), and nothing downstream can start before it.
+ */
+class FlushableSarvamSTT extends sarvam.STT {
+  private current: ReturnType<sarvam.STT["stream"]> | null = null;
+
+  override stream(...args: Parameters<sarvam.STT["stream"]>): ReturnType<sarvam.STT["stream"]> {
+    this.current = super.stream(...args);
+    return this.current;
+  }
+
+  flushNow(): void {
+    const stream = this.current;
+    if (!stream) return;
+    try {
+      stream.flush();
+    } catch {
+      // the stream closed between turns: nothing to flush
+    }
+  }
+}
+
 function buildStt(vocabulary: string[], domains: string[] = []) {
   if (STT_PROVIDER === "sarvam") {
     const hints = [
       vocabulary.length > 0 ? `Names and projects that may be spoken: ${vocabulary.join(", ")}.` : "",
       domains.length > 0 ? `Email domains that may be spoken: ${domains.join(", ")}.` : "",
     ].filter(Boolean);
-    return new sarvam.STT({
+    return new FlushableSarvamSTT({
       model: SARVAM_STT_MODEL,
       mode: SARVAM_STT_MODE,
       languageCode: SARVAM_STT_LANGUAGE,
+      flushSignal: true,
       ...(hints.length > 0 ? { prompt: `${hints.join(" ")} Transcribe these exactly as written.` } : {}),
     });
   }
@@ -101,7 +144,7 @@ function buildStt(vocabulary: string[], domains: string[] = []) {
   });
 }
 
-function buildLlm(): llm.LLM {
+function buildLlm(): HedgedLLM {
   const gemini = (location: string) =>
     new google.LLM({
       model: GEMINI_MODEL,
@@ -111,13 +154,14 @@ function buildLlm(): llm.LLM {
       temperature: LLM_TEMPERATURE,
       thinkingConfig: { thinkingBudget: 0 },
     });
-  if (!VERTEX_FALLBACK_LOCATION || VERTEX_FALLBACK_LOCATION === VERTEX_LOCATION) return gemini(VERTEX_LOCATION);
-
-  // A 429 means the region's shared capacity is momentarily full; the other region has its own pool.
-  // The SDK logs each switch ("failed, switching to next LLM") and recovery ("LLM recovered").
-  return new llm.FallbackAdapter({
-    llms: [gemini(VERTEX_LOCATION), gemini(VERTEX_FALLBACK_LOCATION)],
-    attemptTimeout: 5,
+  const backup = VERTEX_FALLBACK_LOCATION && VERTEX_FALLBACK_LOCATION !== VERTEX_LOCATION ? gemini(VERTEX_FALLBACK_LOCATION) : null;
+  // Mumbai stays primary (data in India); Singapore is hedged in when Mumbai is slow or failing (a 429 means
+  // the region's shared capacity is momentarily full; the other region has its own pool).
+  return new HedgedLLM(gemini(VERTEX_LOCATION), backup, {
+    hedgeMs: LLM_HEDGE_MS,
+    deadlineMs: LLM_DEADLINE_MS,
+    cooldownMs: LLM_PRIMARY_COOLDOWN_MS,
+    streamTimeoutMs: 20_000,
   });
 }
 
@@ -138,6 +182,7 @@ export default defineAgent({
     proc.userData.vad = await silero.VAD.load({
       activationThreshold: VAD_ACTIVATION_THRESHOLD,
       minSpeechDuration: VAD_MIN_SPEECH_MS,
+      minSilenceDuration: VAD_MIN_SILENCE_MS,
     });
 
     const fillers = new FillerCache(buildTts(), BACKGROUND_AUDIO_SAMPLE_RATE, `${TTS_MODEL}/${TTS_SPEAKER}`);
@@ -160,10 +205,16 @@ export default defineAgent({
     console.log(`[boot] participant joined ${since()}`);
     const bridge = new BrowserBridge(ctx.room, participant.identity);
 
-    const { terms: vocabulary, domains } = await bridge.vocabulary();
-    console.log(`[boot] vocabulary: ${vocabulary.length} terms, ${domains.length} email domains ${since()}`);
+    const [{ terms: vocabulary, domains }, previous] = await Promise.all([bridge.vocabulary(), bridge.history()]);
+    console.log(
+      `[boot] vocabulary: ${vocabulary.length} terms, ${domains.length} email domains; previous session: ${previous?.messages.length ?? 0} lines ${since()}`,
+    );
 
     const tts = buildTts();
+    const stt = buildStt(vocabulary, domains);
+    const model = buildLlm();
+    // Auth, TLS and HTTP/2 to both regions before the first question (first calls of a session often failed).
+    void model.warm().catch((err) => console.warn("[llm] warm-up failed", String(err).slice(0, 120)));
 
     console.log(
       `[config] tts=${TTS_MODEL}/${TTS_SPEAKER} streaming=${TTS_STREAMING} | stt=${STT_PROVIDER === "sarvam" ? SARVAM_STT_MODEL : DEEPGRAM_STT_MODEL} | llm=${GEMINI_MODEL}`,
@@ -175,7 +226,9 @@ export default defineAgent({
         // can fail several calls at once (preemptive, main, language retry), so 3 (the default) would
         // hang up mid-outage; the recovery line resets the count whenever it is spoken.
         maxUnrecoverableErrors: 8,
-        llmConnOptions: { maxRetry: 1, retryIntervalMs: 300, timeoutMs: 8000 },
+        // HedgedLLM retries across regions itself and has its own deadline; a session-level retry would
+        // run the whole hedge again and double the worst case.
+        llmConnOptions: { maxRetry: 0, retryIntervalMs: 300, timeoutMs: 8000 },
         ttsConnOptions: { maxRetry: 1, retryIntervalMs: 300 },
       },
       turnHandling: {
@@ -196,8 +249,8 @@ export default defineAgent({
         },
       },
       vad: ctx.proc.userData.vad as silero.VAD,
-      stt: buildStt(vocabulary, domains),
-      llm: buildLlm(),
+      stt,
+      llm: model,
       tts,
     });
 
@@ -241,7 +294,7 @@ export default defineAgent({
 
     bridge.onRpc = (timing) => turn.rpcDone(timing);
 
-    const agent = new PropleyAgent(bridge, tts, vocabulary, VOICE_LANGUAGES, domains);
+    const agent = new PropleyAgent(bridge, tts, vocabulary, VOICE_LANGUAGES, domains, previousConversation(previous));
     agent.onStep = (step) => turn.step(step);
 
     const fillerCache = ctx.proc.userData.fillers as FillerCache;
@@ -270,40 +323,68 @@ export default defineAgent({
 
     let fillerTimer: ReturnType<typeof setTimeout> | null = null;
     let fillerHandle: voice.PlayHandle | null = null;
+    let lastFillerAt = 0;
+    let flushTimer: ReturnType<typeof setTimeout> | null = null;
 
     const cancelFiller = () => {
       if (fillerTimer) {
         clearTimeout(fillerTimer);
         fillerTimer = null;
       }
+      if (flushTimer) {
+        clearTimeout(flushTimer);
+        flushTimer = null;
+      }
+    };
+
+    /** A cached clip (no TTS round trip), unless the agent is already talking. */
+    const playClip = (text: string) => {
+      if (session.agentState === "speaking" || !session.output.audioEnabled) return false;
+      const language = agent.currentLanguage;
+      const frames = fillerCache.frameStream(language, text);
+      if (!frames) {
+        void fillerCache.warm(language).catch(() => {});
+        return false;
+      }
+      console.log(`[filler] (${language}) ${text}`);
+      fillerHandle?.stop();
+      fillerHandle = backgroundAudio.play(frames);
+      lastFillerAt = Date.now();
+      turn.fillerStarted();
+      return true;
     };
 
     session.on(voice.AgentSessionEventTypes.UserStateChanged, (ev) => {
       cancelFiller();
-      if (ev.newState === "speaking" && !session.output.audioEnabled) session.output.setAudioEnabled(true);
+      if (ev.newState === "speaking") {
+        if (!session.output.audioEnabled) session.output.setAudioEnabled(true);
+        // They carried on: an acknowledgement over their words would only be noise.
+        fillerHandle?.stop();
+        fillerHandle = null;
+      }
       if (ev.oldState !== "speaking" || ev.newState === "speaking") return;
-      bridge.prefetchPageContext();
-      if (FILLER_DELAY_MS <= 0) return;
 
+      // End of speech by the VAD: fetch the screen, acknowledge within ~VAD_MIN_SILENCE_MS + FILLER_DELAY_MS
+      // (aim 200-500 ms), and finalize the transcript once the silence reaches STT_FLUSH_SILENCE_MS. Both
+      // timers are cancelled if they carry on speaking.
+      if (stt instanceof FlushableSarvamSTT) {
+        flushTimer = setTimeout(() => {
+          flushTimer = null;
+          stt.flushNow();
+        }, Math.max(0, STT_FLUSH_SILENCE_MS - VAD_MIN_SILENCE_MS));
+      }
+      bridge.prefetchPageContext();
+      if (FILLER_DELAY_MS < 0 || Date.now() - lastFillerAt < FILLER_MIN_GAP_MS) return;
       fillerTimer = setTimeout(() => {
         fillerTimer = null;
-
-        if (session.agentState !== "listening") return;
-
-        const language = agent.currentLanguage;
-        const filler = pickFiller(language);
-        const frames = fillerCache.frameStream(language, filler);
-
-        if (!frames) {
-          void fillerCache.warm(language).catch(() => {});
-          return;
-        }
-
-        console.log(`[filler] (${language}) ${filler}`);
-        fillerHandle = backgroundAudio.play(frames);
-        turn.fillerStarted();
+        playClip(pickFiller(agent.currentLanguage));
       }, FILLER_DELAY_MS);
     });
+
+    // A browser tool (Gmail, Calendar, a booking) can take seconds: say "one moment" rather than go quiet.
+    bridge.onSlowTool = () => {
+      if (session.agentState !== "speaking") playClip(holdLine(agent.currentLanguage));
+    };
 
     session.on(voice.AgentSessionEventTypes.AgentStateChanged, (ev) => {
       if (ev.newState !== "speaking") return;

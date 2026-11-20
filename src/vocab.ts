@@ -132,6 +132,17 @@ function expand(vocabulary: string[]): Term[] {
   return [...terms.values()];
 }
 
+/**
+ * The advisor is giving a NEW name or correcting one ("add a new client named Tapaswin", "rename him",
+ * "it's Tapaswin, not Tapaswan"). Snapping it to a known client would defeat the point, so it is left as heard.
+ */
+const NAMING_RE =
+  /\b(new (client|customer|lead|contact)|add (a |an )?(client|customer|lead|contact)|named|called|rename|re-name|spell(ed|t|ing)?|(it'?s|is) [\w-]+,? not)\b|नया (क्लाइंट|कस्टमर|ग्राहक)|नाम बदल/i;
+
+export function introducesName(transcript: string): boolean {
+  return NAMING_RE.test(transcript);
+}
+
 export function snapToVocabulary(transcript: string, vocabulary: string[]): string {
   if (!transcript.trim() || vocabulary.length === 0) return transcript;
 
@@ -241,7 +252,7 @@ export function snapEmailDomains(text: string, domains: string[]): string {
       if (`.${rest.join(".")}` !== end) continue; // same ending (.in, .co.in) or no match
       const key = sttKey(name);
       const score = similarity(key, heardKey);
-      if (!acceptable(name, label, key, score)) continue;
+      if (!acceptable(name, label, key, score) && !soundsLikeShort(name, label)) continue;
       if (!best || score > best.score) best = { domain, score };
     }
     return best ? `@${best.domain}` : match;
@@ -254,6 +265,16 @@ export function snapEmailDomains(text: string, domains: string[]): string {
  * Longer keys are distinctive enough for looser letters ("castrail" -> "kestrel"). Devanagari can't be compared
  * letter by letter, so it needs an exact key.
  */
+/**
+ * Short names said as one syllable: "auum" is said like "om" and comes back as "om", "awm", "aum" or "aoum". Those
+ * match on consonants alone ("m"); "kava" vs "quva" still doesn't ("kv" vs "qv").
+ */
+function soundsLikeShort(name: string, heard: string): boolean {
+  if (heard.length > 4 || name.length > 5 || !/^[a-z]+$/i.test(heard)) return false;
+  const consonants = (w: string) => w.toLowerCase().replace(/[aeiouwhy]/g, "");
+  return consonants(name).length > 0 && consonants(name) === consonants(heard);
+}
+
 function acceptable(name: string, heard: string, key: string, score: number): boolean {
   if (isIndic(heard)) return score === 1 && key.length >= 3;
   if (key.length < 4) return score === 1 && similarity(name, heard.toLowerCase()) >= 0.6;

@@ -134,7 +134,7 @@ export const AGENT_TOOLS: AgentToolSpec[] = [
     name: "set_client_section",
     kind: "action",
     commandId: "set-client-section",
-    description: "Switch the active section on an open client profile.",
+    description: "Switch the active section on an open client profile. Only for a client profile, never for the calendar.",
     parameters: {
       section: {
         type: "string",
@@ -143,6 +143,19 @@ export const AGENT_TOOLS: AgentToolSpec[] = [
       },
     },
     required: ["section"],
+  },
+
+  {
+    name: "set_calendar_view",
+    kind: "action",
+    commandId: "set-calendar-view",
+    description:
+      "Switch the presentations calendar to a day, week or month view, and/or show a date. USE THIS for: 'day view', 'show me the week', 'कैलेंडर को डे में बदलो', 'go to the 21st on the calendar'. Opens the calendar if it is not open. Resolve relative dates ('tomorrow', '21 तारीख') yourself.",
+    parameters: {
+      view: { type: "string", description: "Calendar view.", enum: ["day", "week", "month"] },
+      date: { type: "string", description: "Optional date to show, as YYYY-MM-DD. Leave out to keep the date on screen." },
+    },
+    required: ["view"],
   },
 
   {
@@ -178,7 +191,7 @@ export const AGENT_TOOLS: AgentToolSpec[] = [
     kind: "action",
     commandId: "set-deal-stage",
     description:
-      "Change a client's deal stage. USE THIS for: 'mark Jenal as closed won', 'they signed', 'we won it', 'we lost that one', 'move Rahul to negotiation', 'she's made an offer'. IT DOES NOT APPLY YET — read the summary back as a question, get a spoken yes, then call confirm_action.",
+      "Change a client's deal stage. USE THIS for: 'mark Jenal as closed won', 'they signed', 'we won it', 'we lost that one', 'move Rahul to negotiation', 'she's made an offer'. It SAVES AT ONCE (no yes needed): say in one line what was saved, the name exactly as saved, so they hear a mistake; a fix is just another call.",
     parameters: {
       client: { type: "string", description: "Client name." },
       stage: {
@@ -233,8 +246,8 @@ export const AGENT_TOOLS: AgentToolSpec[] = [
     parameters: {
       client: { type: "string", description: "Client name. Required." },
       project: { type: "string", description: "Development/project name. Required." },
-      date: { type: "string", description: "Date, e.g. 'tomorrow', '14 July'. Required." },
-      time: { type: "string", description: "Time, e.g. '3 PM', '10:00'. Required." },
+      date: { type: "string", description: "Date as YYYY-MM-DD; resolve 'tomorrow', '21st', 'next Friday' yourself. Required." },
+      time: { type: "string", description: "Time with AM/PM ('8 PM', '10:30 AM') or 24-hour ('20:00'). Required." },
     },
     required: ["client", "project", "date", "time"],
   },
@@ -243,13 +256,25 @@ export const AGENT_TOOLS: AgentToolSpec[] = [
     kind: "action",
     commandId: "add-customer",
     description:
-      "Add a client to the portfolio. USE THIS for: add a customer/client/lead, 'new lead', 'put someone on my books'. The NAME is the only thing you need — ask for it if they have not said it. Phone, email and city are OPTIONAL: offer to take them, but if the advisor does not have them or wants to skip, go ahead without. Never demand a phone number. It saves NOTHING yet — it reads the change back as a question, and you wait for a spoken yes before calling confirm_action.",
+      "Add a client to the portfolio, or add a phone, email or city to a client you already have (pass their saved name plus the new detail: 'his email is …' right after adding someone means THIS, never send_email). USE THIS for: add a customer/client/lead, 'new lead', 'put someone on my books', 'her number is …'. The NAME is the only thing you need — ask for it if they have not said it. Phone, email and city are OPTIONAL: offer to take them, but if the advisor does not have them or wants to skip, go ahead without. Never demand a phone number. It SAVES AT ONCE (no yes needed): say in one line what was saved, the name exactly as saved, so they hear a mistake; a fix is just another call. Exception: when the result says needsConfirmation (the name sounds like a client they already have), read it back and wait for a yes before confirm_action.",
     parameters: {
-      name: { type: "string", description: "Client full name." },
+      name: { type: "string", description: "Client full name, ALWAYS in English letters, even when they speak Hindi (तपस्विन → Tapaswin)." },
       email: { type: "string", description: "Email if given." },
       phone: { type: "string", description: "Phone if given." },
       city: { type: "string", description: "City if given." },
     },
+  },
+  {
+    name: "rename_client",
+    kind: "action",
+    commandId: "rename-client",
+    description:
+      "Change a client's name. USE THIS when a name was saved wrong or misheard: 'it's Tapaswin, not Tapaswan', 'fix the spelling', 'rename Rahul to Rahul Verma'. Pass the name as it is saved now in `client`. It SAVES AT ONCE (no yes needed): say in one line what was saved, the name exactly as saved, so they hear a mistake; a fix is just another call.",
+    parameters: {
+      client: { type: "string", description: "The client's name as currently saved." },
+      new_name: { type: "string", description: "The correct full name, in English letters (तपस्विन → Tapaswin)." },
+    },
+    required: ["client", "new_name"],
   },
   {
     name: "client_brief",
@@ -265,7 +290,7 @@ export const AGENT_TOOLS: AgentToolSpec[] = [
     name: "search_knowledge",
     kind: "read",
     description:
-      "Search what was SAID and WRITTEN before: presentation transcripts, the advisor's presentation notes, client notes and — if the advisor turned it on — their emails with clients. USE THIS for anything about what a client said, asked, wanted, liked, worried about or agreed to — 'what did Rahul say about parking?', 'what's Sofia's budget?', 'did Priya ask for a discount?', 'what did Arjun email about?'. Pass `client` whenever they name one. Answer ONLY from the returned text and mention when it was said. If nothing returned answers it, say you have no record of that — never fill the gap.",
+      "Search what was SAID and WRITTEN before: presentation transcripts, the advisor's presentation notes, client notes, the advisor's EARLIER CONVERSATIONS WITH YOU, and — if the advisor turned it on — their emails with clients. For 'what did I ask you about Rahul yesterday?' leave out `client` unless they name one. USE THIS for anything about what a client said, asked, wanted, liked, worried about or agreed to — 'what did Rahul say about parking?', 'what's Sofia's budget?', 'did Priya ask for a discount?', 'what did Arjun email about?'. Pass `client` whenever they name one. Answer ONLY from the returned text and mention when it was said. If nothing returned answers it, say you have no record of that — never fill the gap.",
     parameters: {
       query: { type: "string", description: "The question in their words, e.g. 'what did he say about parking'." },
       client: { type: "string", description: "Client name, if they named one. The match is phonetic." },
@@ -278,7 +303,7 @@ export const AGENT_TOOLS: AgentToolSpec[] = [
     kind: "connector",
     connector: "gmail",
     description:
-      "Send an email from the advisor's own Gmail. USE THIS for: email/mail/write to/send Rahul the brochure, 'drop Sofia a line'. Name the client in `client` and the address is looked up for you — never ask for or invent an email address. Write the subject and the full body yourself, short and professional, signed with the advisor's name. It SENDS NOTHING YET: a draft card appears on their screen and THEY tap Send. Tell them in one short line to check it and tap Send. Never say it was sent. If it returns needsConnection, tell them to tap Connect on screen.",
+      "Send an email from the advisor's own Gmail. USE THIS for: email/mail/write to/send Rahul the brochure, 'drop Sofia a line'. Name the client in `client` and the address is looked up for you — never ask for or invent an email address. Write the subject and the full body yourself, short and professional, signed with the advisor's name. It SENDS NOTHING YET: it hands back a summary. Read it back as one short question with the gist of what the email says, get a spoken yes, then call confirm_action. Never say it was sent before confirm_action succeeds. If it returns needsConnection, tell them to tap Connect on screen.",
     parameters: {
       client: { type: "string", description: "The client's name, e.g. 'Rahul Verma'. Use this OR `to`." },
       to: { type: "string", description: "An email address the advisor dictated, only if it is not a client." },
@@ -292,7 +317,7 @@ export const AGENT_TOOLS: AgentToolSpec[] = [
     kind: "connector",
     connector: "gmail",
     description:
-      "Reply in the email thread with a client, from the advisor's own Gmail. USE THIS for: reply to Rahul's email, write back to Sofia, answer Priya's mail about the floor plan. It replies to the LATEST email with that client; pass `about` with a few words when they name a topic. Write the reply body from what the advisor told you; if they did not say what to reply, ask them first. It SENDS NOTHING YET: a reply card appears on their screen and THEY tap Send. Tell them in one short line to check it and tap Send. Never say it was sent.",
+      "Reply in the email thread with a client, from the advisor's own Gmail. USE THIS for: reply to Rahul's email, write back to Sofia, answer Priya's mail about the floor plan. It replies to the LATEST email with that client; pass `about` with a few words when they name a topic. Write the reply body from what the advisor told you; if they did not say what to reply, ask them first. It SENDS NOTHING YET: it hands back a summary and what the client last wrote. Read it back as one short question, get a spoken yes, then call confirm_action. Never say it was sent before confirm_action succeeds.",
     parameters: {
       client: { type: "string", description: "The client's name, e.g. 'Rahul Verma'." },
       about: { type: "string", description: "A few words to pick the right email, e.g. 'floor plan'. Optional." },
@@ -305,7 +330,7 @@ export const AGENT_TOOLS: AgentToolSpec[] = [
     kind: "connector",
     connector: "googlecalendar",
     description:
-      "Add an event to the advisor's own Google Calendar and invite a client. USE THIS for: put/add/block a site visit, call or meeting in my calendar, 'add Rahul on Friday at 4'. This is NOT for booking a Propley presentation — that is schedule_presentation. Resolve relative dates yourself into a local ISO date-time. It ADDS NOTHING YET: an event card appears on their screen and THEY tap Add. Tell them in one short line to check it and tap Add. Never say it was added. If it returns needsConnection, tell them to tap Connect on screen.",
+      "Add an event to the advisor's own Google Calendar and invite a client. USE THIS only once they said Google Calendar (or said yes to your offer to add it there): 'put the site visit on my Google Calendar', 'add it to Google too'. This is NOT for booking a Propley presentation — that is schedule_presentation; if they just say 'set an event', ask which. Never make up a title: if they did not say what it is, ask. Resolve relative dates yourself into a local ISO date-time. It ADDS NOTHING YET: it hands back a summary. Read it back as one short question, get a spoken yes, then call confirm_action. If something is already on their calendar at that time it says so and adds nothing: tell them. If it returns needsConnection, tell them to tap Connect on screen.",
     parameters: {
       title: { type: "string", description: "Event title, e.g. 'Site visit with Rahul Verma'." },
       start_time: { type: "string", description: "Local start, ISO 8601 without offset, e.g. '2026-11-21T16:00:00'." },
@@ -313,6 +338,7 @@ export const AGENT_TOOLS: AgentToolSpec[] = [
       client: { type: "string", description: "Client to invite, by name. Their address is looked up for you." },
       location: { type: "string", description: "Where, if they said." },
       description: { type: "string", description: "A line of notes, if useful." },
+      even_if_taken: { type: "boolean", description: "Only after they heard something is already at that time and still want a second event." },
     },
     required: ["title", "start_time"],
   },
@@ -321,10 +347,21 @@ export const AGENT_TOOLS: AgentToolSpec[] = [
     kind: "connector",
     connector: "googlecalendar",
     description:
-      "Read the advisor's own Google Calendar. USE THIS for: what's on my calendar, am I free on Friday, what do I have tomorrow. For Propley presentations use list_meetings instead. Without dates it covers the next 7 days.",
+      "Read the advisor's own Google Calendar. USE THIS for: what's on my Google Calendar, am I free on Friday, what do I have tomorrow, 'did it get added to my Google Calendar?'. You CAN see their Google Calendar: check it, never tell them to look themselves. For Propley presentations use list_meetings instead. Without dates it covers the next 7 days.",
     parameters: {
       from: { type: "string", description: "Start of the range, ISO date or date-time. Default now." },
       to: { type: "string", description: "End of the range, ISO date or date-time. Default 7 days after `from`." },
+    },
+  },
+  {
+    name: "search_emails",
+    kind: "connector",
+    connector: "gmail",
+    description:
+      "Read the advisor's own Gmail. USE THIS for: did Rahul reply, any email from Sofia, what did Priya write about the floor plan, did my email to Arjun go out. Name the client to see their emails both ways; add words to narrow it. Returns the latest 5 with sender, subject, date and the start of the text. You CAN see their Gmail: check it, never tell them to look themselves.",
+    parameters: {
+      client: { type: "string", description: "Client name, to see emails to and from them. Optional." },
+      query: { type: "string", description: "Gmail search words, e.g. 'floor plan' or 'in:sent brochure'. Optional." },
     },
   },
   {

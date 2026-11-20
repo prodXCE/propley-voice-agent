@@ -1,3 +1,4 @@
+import { TURN_RETRY_BUDGET_MS } from "./config.js";
 import { voice, type ChatContext, type ChatChunk, type FlushSentinel, type stt, type ToolContext } from "@livekit/agents";
 import type * as sarvam from "@livekit/agents-plugin-sarvam";
 import type { AudioFrame } from "@livekit/rtc-node";
@@ -5,10 +6,10 @@ import type { BrowserBridge } from "./browser-bridge.js";
 import { DEFAULT_TTS_LANGUAGE, languageName, speaksLanguage, ttsLanguageForText, typedLanguage } from "./language.js";
 import { LanguagePolicy } from "./language-policy.js";
 import { clockLine, SYSTEM_PROMPT } from "./prompt.js";
-import { isMeaningfulUtterance } from "./utterance.js";
+import { endsWithQuestion, isMeaningfulUtterance } from "./utterance.js";
 import { stripSelfEcho } from "./echo.js";
 import { stripGrovel, stripPlumbing } from "./grovel.js";
-import { snapEmailDomains, snapToVocabulary } from "./vocab.js";
+import { introducesName, snapEmailDomains, snapToVocabulary } from "./vocab.js";
 import { buildTools, newTurnBudget, type TurnBudget } from "./tools.js";
 import {
   isDataQuestion,
@@ -16,6 +17,9 @@ import {
   RETRY_INSTRUCTION,
   SAFE_FALLBACK,
   type ConversationEvidence,
+  claimsDone,
+  ACTION_RETRY_INSTRUCTION,
+  NOT_DONE_FALLBACK,
 } from "./grounding.js";
 
 const RECOVERY_LINE = "Sorry, I lost that — say it again?";
@@ -82,7 +86,15 @@ function replay(chunks: Chunk[]): ReadableStream<Chunk> {
 const HEAD_CHARS = 220;
 const SENTENCE_END = /[.!?](\s|$)/;
 
-function guardOpening(stream: ReadableStream<Chunk>, onRecover: () => void): ReadableStream<Chunk> {
+/**
+ * `onClaim`: when the reply opens by saying something was done but nothing succeeded this turn, it is called
+ * instead of speaking that; it returns the replacement (a retried reply, possibly a tool call) or null.
+ */
+function guardOpening(
+  stream: ReadableStream<Chunk>,
+  onRecover: () => void,
+  onClaim?: () => Promise<Collected | null>,
+): ReadableStream<Chunk> {
   return new ReadableStream<Chunk>({
     async start(controller) {
       const reader = stream.getReader();
@@ -117,6 +129,20 @@ function guardOpening(stream: ReadableStream<Chunk>, onRecover: () => void): Rea
 
         if (!head.trim() && !sawTool) return recover("empty reply");
 
+        if (onClaim && !sawTool && claimsDone(head)) {
+          console.warn(`[claim] said done without doing it: ${JSON.stringify(head.slice(0, 80))}`);
+          await reader.cancel().catch(() => {});
+          const retried = await onClaim().catch(() => null);
+          sent = true;
+          if (retried && (retried.calledTool || (retried.text && !claimsDone(retried.text)))) {
+            for (const chunk of retried.chunks) controller.enqueue(chunk);
+          } else {
+            controller.enqueue(NOT_DONE_FALLBACK);
+          }
+          controller.close();
+          return;
+        }
+
         sent = true;
         const cleaned = sawTool ? head : stripPlumbing(stripGrovel(head));
 
@@ -143,6 +169,18 @@ function guardOpening(stream: ReadableStream<Chunk>, onRecover: () => void): Rea
   });
 }
 
+/** A tool ran since the advisor's last message and did not fail: replies may then say it was done. */
+function actionSucceeded(chatCtx: ChatContext): boolean {
+  const items = chatCtx.items;
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i];
+    if (item.type === "message" && item.role === "user") return false;
+    // A staged change ("needsConfirmation") has not happened yet: "I've sent it" would still be a lie.
+    if (item.type === "function_call_output" && !/"error"\s*:|"needsConfirmation"\s*:\s*true/.test(String(item.output ?? ""))) return true;
+  }
+  return false;
+}
+
 function hasFreshToolOutput(chatCtx: ChatContext): boolean {
   const items = chatCtx.items;
   for (let i = items.length - 1; i >= 0; i--) {
@@ -154,8 +192,8 @@ function hasFreshToolOutput(chatCtx: ChatContext): boolean {
 }
 
 /** Everything the conversation already holds, for the grounding check: see grounding.supported(). */
-function conversationEvidence(chatCtx: ChatContext): ConversationEvidence {
-  const said: string[] = [];
+function conversationEvidence(chatCtx: ChatContext, previous = ""): ConversationEvidence {
+  const said: string[] = previous ? [previous] : [];
   const heard: string[] = [];
   for (const item of chatCtx.items) {
     if (item.id === INSTRUCTIONS_ID) continue;
@@ -170,6 +208,15 @@ function conversationEvidence(chatCtx: ChatContext): ConversationEvidence {
 function agentReplies(chatCtx: ChatContext): string {
   return chatCtx.items
     .filter((i) => i.type === "message" && i.role === "assistant")
+    .map((i) => (i.type === "message" ? (i.textContent ?? "") : ""))
+    .join("\n");
+}
+
+/** The advisor's last `count` messages, this one included. */
+function userLines(chatCtx: ChatContext, count = 6): string {
+  return chatCtx.items
+    .filter((i) => i.type === "message" && i.role === "user")
+    .slice(-count)
     .map((i) => (i.type === "message" ? (i.textContent ?? "") : ""))
     .join("\n");
 }
@@ -240,6 +287,9 @@ function currentTurnOnly(chatCtx: ChatContext): ChatContext {
 
 const INSTRUCTIONS_ID = "lk.agent_task.instructions";
 
+/** How much of what the agent has said aloud is kept for the read-back guard. */
+const SPOKEN_MEMORY_CHARS = 8000;
+
 function applyInstructions(chatCtx: ChatContext, instructions: string): boolean {
   const index = chatCtx.indexById(INSTRUCTIONS_ID);
   if (index === undefined) return false;
@@ -264,7 +314,7 @@ function replaceLastUserText(chatCtx: ChatContext, text: string): void {
 export class PropleyAgent extends voice.Agent {
   private ttsLanguage: string | null = null;
   private lastContext: string | null = null;
-  private readonly turn: { text: string; agentSaid: string; typed: boolean };
+  private readonly turn: { text: string; agentSaid: string; spoken: string; typed: boolean; userSaid: string };
   private readonly budget: TurnBudget;
   private readonly language: LanguagePolicy;
 
@@ -273,6 +323,14 @@ export class PropleyAgent extends voice.Agent {
   /** Records how each reply was produced (turn telemetry). */
   onStep: (step: string) => void = () => {};
   private readonly recovered = () => this.onStep("recovery-line");
+  /** When this user turn started being answered, and which turn that was (count of their messages). */
+  private turnStartedAt = Date.now();
+  private turnIndex = -1;
+
+  /** Past the retry budget: answer with what there is rather than spend another LLM round trip on a check. */
+  private get late(): boolean {
+    return Date.now() - this.turnStartedAt > TURN_RETRY_BUDGET_MS;
+  }
 
   constructor(
     private readonly bridge: BrowserBridge,
@@ -280,13 +338,15 @@ export class PropleyAgent extends voice.Agent {
     private readonly vocabulary: string[] = [],
     languages: string[] = [],
     private readonly emailDomains: string[] = [],
+    /** The advisor's previous session (previous.ts), or "". */
+    private readonly previous: string = "",
   ) {
-    const turn = { text: "", agentSaid: "", typed: false };
+    const turn = { text: "", agentSaid: "", spoken: "", typed: false, userSaid: "" };
     const budget = newTurnBudget();
     super({
       instructions: SYSTEM_PROMPT,
       allowInterruptions: true,
-      tools: buildTools(bridge, () => turn.text, budget, () => ({ agentSaid: turn.agentSaid, typed: turn.typed })),
+      tools: buildTools(bridge, () => turn.text, budget, () => ({ agentSaid: `${turn.agentSaid}\n${turn.spoken}`, typed: turn.typed, userSaid: turn.userSaid })),
     });
     this.turn = turn;
     this.budget = budget;
@@ -363,6 +423,12 @@ export class PropleyAgent extends voice.Agent {
     toolCtx: ToolContext,
     modelSettings: ModelSettings,
   ): Promise<ReadableStream<ChatChunk | string | FlushSentinel> | null> {
+    const userCount = chatCtx.items.filter((i) => i.type === "message" && i.role === "user").length;
+    if (userCount !== this.turnIndex) {
+      this.turnIndex = userCount;
+      this.turnStartedAt = Date.now();
+    }
+
     const heard = stripLanguageTag(lastUserText(chatCtx)).trim();
     const deEchoed = stripSelfEcho(heard, lastAgentText(chatCtx)).trim();
 
@@ -371,7 +437,12 @@ export class PropleyAgent extends voice.Agent {
       return null;
     }
 
-    const userText = snapEmailDomains(snapToVocabulary(deEchoed, this.vocabulary), this.emailDomains).trim();
+    // Snapping fixes speech-recognition mishearings. Typed text is exactly what they meant, and a name being
+    // introduced or corrected must not be pulled onto an existing client (Tapaswin -> Tapaswan).
+    const userText =
+      this.turn.typed || introducesName(deEchoed)
+        ? deEchoed
+        : snapEmailDomains(snapToVocabulary(deEchoed, this.vocabulary), this.emailDomains).trim();
 
     if (userText !== heard) {
       console.log(`[heard] ${JSON.stringify(heard)} -> ${JSON.stringify(userText)}`);
@@ -380,9 +451,10 @@ export class PropleyAgent extends voice.Agent {
 
     this.turn.text = userText;
     this.turn.agentSaid = agentReplies(chatCtx);
+    this.turn.userSaid = userLines(chatCtx);
     this.budget.reset();
 
-    if (!isMeaningfulUtterance(userText)) {
+    if (!isMeaningfulUtterance(userText, endsWithQuestion(this.turn.agentSaid))) {
       console.log(`[skip] ignoring non-utterance: ${JSON.stringify(userText)}`);
       return null;
     }
@@ -390,7 +462,7 @@ export class PropleyAgent extends voice.Agent {
     const spoken = this.language.language;
 
     const pageContext = await this.bridge.pageContext();
-    const instructions = [languageDirective(spoken), SYSTEM_PROMPT, pageContext, clockLine()]
+    const instructions = [languageDirective(spoken), SYSTEM_PROMPT, this.previous, pageContext, clockLine()]
       .filter(Boolean)
       .join("\n\n");
 
@@ -424,7 +496,11 @@ export class PropleyAgent extends voice.Agent {
 
     const needsGrounding = isDataQuestion(userText) && !hasToolOutput;
 
-    const switched = spoken !== this.answeredIn;
+    // The last reply was in another language (the model drifted, or the policy lagged): the model tends to carry
+    // it on, so this turn gets the same language check as a switch.
+    const lastReply = chatCtx.items.findLast((i) => i.type === "message" && i.role === "assistant");
+    const drifted = lastReply?.type === "message" && !speaksLanguage(lastReply.textContent ?? "", spoken);
+    const switched = spoken !== this.answeredIn || drifted;
 
     // A switch turn is held back for a language check anyway, so start the corrective call now
     // rather than after the check fails (it would add a full LLM round trip). Unused if not needed.
@@ -443,9 +519,12 @@ export class PropleyAgent extends voice.Agent {
       return textToStream(RECOVERY_LINE);
     }
 
+    // Nothing succeeded this turn, so the reply may not say anything was done.
+    const onClaim = actionSucceeded(chatCtx) ? undefined : () => this.claimRetry(chatCtx, toolCtx, modelSettings);
+
     if (!needsGrounding && !switched) {
       this.onStep("stream");
-      return guardOpening(stream, this.recovered);
+      return guardOpening(stream, this.recovered, onClaim);
     }
 
     let collected: Collected;
@@ -465,7 +544,7 @@ export class PropleyAgent extends voice.Agent {
     this.onStep(needsGrounding ? "checked" : "checked-lang");
     const grounded = await this.groundOrRetry(
       collected,
-      { chatCtx, toolCtx, modelSettings, userText, screen, hasToolOutput, evidence: conversationEvidence(chatCtx) },
+      { chatCtx, toolCtx, modelSettings, userText, screen, hasToolOutput, evidence: conversationEvidence(chatCtx, this.previous) },
     );
     if (grounded === null) {
       this.onStep("refused");
@@ -474,7 +553,25 @@ export class PropleyAgent extends voice.Agent {
 
     const spokenOut = await this.enforceLanguage(grounded, chatCtx, toolCtx, modelSettings, spoken, languageRetry);
     this.answeredIn = spoken;
-    return guardOpening(replay(spokenOut.chunks), this.recovered);
+    return guardOpening(replay(spokenOut.chunks), this.recovered, onClaim);
+  }
+
+  /** The turn again, told that nothing was done: it must act (call the tool) or say plainly it hasn't. */
+  private async claimRetry(chatCtx: ChatContext, toolCtx: ToolContext, modelSettings: ModelSettings): Promise<Collected | null> {
+    if (this.late) {
+      this.onStep("claim-retry-skipped");
+      return null; // the fixed "not done" line instead of another round trip
+    }
+    this.onStep("claim-retry");
+    const retryCtx = chatCtx.copy();
+    retryCtx.addMessage({ role: "system", content: ACTION_RETRY_INSTRUCTION });
+    try {
+      const stream = await super.llmNode(retryCtx, toolCtx, modelSettings);
+      return stream ? await collectStream(stream) : null;
+    } catch (err) {
+      console.error("[claim] retry failed", err);
+      return null;
+    }
   }
 
   private async groundOrRetry(
@@ -505,6 +602,10 @@ export class PropleyAgent extends voice.Agent {
     }
 
     console.warn(`[grounding] ungrounded answer blocked: ${JSON.stringify(collected.text)}`);
+    if (this.late) {
+      this.onStep("grounding-retry-skipped");
+      return null; // SAFE_FALLBACK: never the unchecked answer, and no further wait
+    }
     this.onStep("grounding-retry");
 
     const retryCtx = chatCtx.copy();
@@ -556,6 +657,10 @@ export class PropleyAgent extends voice.Agent {
     if (speaksLanguage(out.text, spoken)) return out;
 
     console.warn(`[lang] wrong language out (wanted ${spoken}): ${JSON.stringify(out.text.slice(0, 40))}`);
+    if (!prepared && this.late) {
+      this.onStep("lang-retry-skipped");
+      return out; // the right answer in the wrong language beats more silence
+    }
     this.onStep(prepared ? "lang-retry-early" : "lang-retry");
 
     const retried = await (prepared ?? this.languageRetry(chatCtx, toolCtx, modelSettings, spoken));
@@ -621,11 +726,21 @@ export class PropleyAgent extends voice.Agent {
       }
     }
 
+    // Everything spoken is noted as it is spoken: a reply that fails halfway (Vertex 429) is never saved to the
+    // history, but the advisor heard it, and the read-back guard must count it (or it loops on "read it back").
+    const turn = this.turn;
+    const note = (chunk: string) => {
+      turn.spoken = `${turn.spoken}${chunk}`.slice(-SPOKEN_MEMORY_CHARS);
+    };
     const replayed = (async function* () {
-      for (const chunk of buffered) yield chunk;
+      for (const chunk of buffered) {
+        note(chunk);
+        yield chunk;
+      }
       while (true) {
         const { value, done } = await iterator.next();
         if (done) return;
+        note(value);
         yield value;
       }
     })();

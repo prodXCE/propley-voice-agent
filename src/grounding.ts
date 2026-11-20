@@ -36,6 +36,9 @@ const RECALL_RE = new RegExp(
     "\\bconfirm (back|what|that you (got|have|received|heard))",
     "\\bwhat did (i|you) (just )?(say|tell|give|spell)",
     "\\b(i|you) just (said|told|gave|spelled|spelt)",
+    "\\b(last time|previous(ly)?|earlier)\\b.*\\b(discuss|talk|ask|said|told|spoke|chat|convers)",
+    "\\b(discuss|talk|ask|said|told|spoke|chat|convers)\\w*\\b.*\\b(last time|previously|earlier|yesterday)",
+    "पिछली बार|पिछली दफ़ा|पिछली दफा",
     "फिर से|दोबारा|दोहरा",
   ].join("|"),
   "i",
@@ -137,3 +140,29 @@ export const RETRY_INSTRUCTION =
   "STOP. You just answered with specific facts about the advisor's data without looking anything up, and you do not know those facts. Call the correct tool now to get the real answer. If no tool can answer it, say plainly that you do not have it — never guess a number, a stage, a date or a contact detail.";
 
 export const SAFE_FALLBACK = "I don't have that to hand — let me pull it up for you.";
+
+/**
+ * A reply saying a change was made ("I've scheduled it", "it's been sent", "कर दिया"). Only true after a tool
+ * did it; said without one, it is a false claim the advisor will act on.
+ */
+const DONE_RE = new RegExp(
+  [
+    "\\b(i'?ve|i have|it'?s|it has|that'?s|that has|has been|have been|is now|are now|all)\\s+(been\\s+)?(scheduled|booked|sent|added|updated|saved|moved|rescheduled|cancell?ed|created|changed|renamed|deleted|noted)\\b",
+    // Not "you sent it" / "they booked it": that is the advisor or the client, not you.
+    "(?<!\\b(you|they|he|she)\\s)\\b(scheduled|booked|sent|added|updated|saved|rescheduled|cancell?ed|renamed)\\s+(it|that|them|the (visit|meeting|presentation|email|note|client))\\b",
+    "कर दिया|कर दी|कर दिए|भेज दिया|भेज दी|बुक कर दिया|अपडेट कर दिया|सेव कर दिया",
+  ].join("|"),
+  "i",
+);
+
+/** "I can't see whether it was sent", "did you send it?": an open question, not a claim. */
+const OPEN_CLAUSE_RE = /\b(whether|if|did you|have you)\b[^.?!,;—]*/gi;
+
+export function claimsDone(text: string): boolean {
+  return DONE_RE.test(text.replace(OPEN_CLAUSE_RE, ""));
+}
+
+export const ACTION_RETRY_INSTRUCTION =
+  "STOP. Your reply says something was done, but you did not call any tool this turn, so nothing was done. Either call the right tool now, or tell them plainly it has not been done yet and offer to do it.";
+
+export const NOT_DONE_FALLBACK = "I haven't done that yet. Want me to go ahead?";

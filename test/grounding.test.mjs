@@ -39,3 +39,33 @@ test("recall requests are told apart from questions that merely end in 'again'",
     assert.ok(!asksToRecall(t), t);
   }
 });
+
+import { claimsDone } from "../src/grounding.ts";
+
+test("replies that say an action happened are recognised", () => {
+  for (const t of [
+    "I've updated Shanaya's profile.",
+    "I've scheduled the site visit for tomorrow at 6 PM.",
+    "It's been sent.",
+    "Done, I've added Tapaswin.",
+    "ठीक है, मैंने विक्रम को ईमेल भेज दिया है।",
+    "मीटिंग बुक कर दिया है।",
+    "Whether or not you asked, I've sent it.",
+  ]) assert.ok(claimsDone(t), t);
+});
+
+test("facts, offers and questions are not claims", () => {
+  for (const t of [
+    "You have seven completed meetings, and one live right now.",
+    "Rahul's presentation is on the 21st at 4 PM.",
+    "Shall I schedule it for tomorrow at 6?",
+    "The draft is on your screen; check it and tap Send.",
+    "I can add Tapaswin as a new client. Should I?",
+    "I haven't done that yet. Want me to go ahead?",
+    // The advisor's actions, and open questions (the bench's "did the email go out?" replies)
+    "I can't see whether you sent it. I put the draft on your screen last time.",
+    "I can't tell whether you sent it. I put the draft on your screen, and you would have tapped Send.",
+    "I can't tell if it has been sent.",
+    "Did you send it?",
+  ]) assert.ok(!claimsDone(t), t);
+});

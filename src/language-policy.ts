@@ -77,7 +77,10 @@ export class LanguagePolicy {
       return { language: this.current, switched: false };
     }
 
-    if (confidence < MIN_CONFIDENCE) {
+    // Sarvam's probability is low for Hinglish ("अच्छा क्लाइंट पोर्टफोलियो कितने सारे हैं?" at 55%), but a
+    // transcript in the language's own script is evidence enough; the confidence bar is for Latin text.
+    const scriptBacked = candidate !== DEFAULT_TTS_LANGUAGE && agreesWithScript(candidate, transcript);
+    if (confidence < MIN_CONFIDENCE && !scriptBacked) {
       return {
         language: this.current,
         switched: false,

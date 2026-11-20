@@ -1,5 +1,5 @@
 import type { Room } from "@livekit/rtc-node";
-import { RPC_TIMEOUT_MS } from "./config.js";
+import { SLOW_TOOL_MS, RPC_TIMEOUT_MS } from "./config.js";
 import { getToolSpec } from "./shared/agent-tools.js";
 
 /** How long a fetched screen snapshot may be reused without a fresh round trip. */
@@ -38,9 +38,16 @@ export interface RpcTiming {
   ok: boolean;
 }
 
+export interface PreviousSession {
+  endedAt: string;
+  messages: { role: "advisor" | "assistant"; text: string }[];
+}
+
 export class BrowserBridge {
   /** Called after every RPC round trip to the browser (turn telemetry). */
   onRpc: ((timing: RpcTiming) => void) | null = null;
+  /** Called once when a tool has been running SLOW_TOOL_MS (the agent says "one moment"). */
+  onSlowTool: (() => void) | null = null;
 
   constructor(
     private readonly room: Room,
@@ -70,6 +77,7 @@ export class BrowserBridge {
   async executeTool(name: string, args: Record<string, unknown>): Promise<unknown> {
     // Read tools never change the page; anything else may, so the next LLM call must look again.
     if (getToolSpec(name)?.kind !== "read") this.screen = null;
+    const slow = setTimeout(() => this.onSlowTool?.(), SLOW_TOOL_MS);
     try {
       const raw = await this.call("tool.execute", { name, args });
       const envelope = JSON.parse(raw) as ToolEnvelope;
@@ -77,6 +85,8 @@ export class BrowserBridge {
       return envelope.result;
     } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) };
+    } finally {
+      clearTimeout(slow);
     }
   }
 
@@ -141,6 +151,16 @@ export class BrowserBridge {
       return { terms: strings(parsed.terms), domains: strings(parsed.domains) };
     } catch {
       return { terms: [], domains: [] };
+    }
+  }
+
+  /** The advisor's previous assistant session, oldest line first, or null (first session, or the browser can't say). */
+  async history(): Promise<PreviousSession | null> {
+    try {
+      const { session } = JSON.parse(await this.call("history.get", {})) as { session?: PreviousSession | null };
+      return session && Array.isArray(session.messages) && session.messages.length > 0 ? session : null;
+    } catch {
+      return null;
     }
   }
 

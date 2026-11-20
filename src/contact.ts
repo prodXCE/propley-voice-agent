@@ -56,3 +56,18 @@ export function spellOut(address: string): string {
   const host = WELL_KNOWN_DOMAINS.has(name) ? name : name.split("").join("-");
   return `${letters(local)} at ${[host, ...rest].join(" dot ")}`;
 }
+
+const PLAIN_ADDRESS_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/;
+
+/**
+ * The model drafted without the address the advisor just dictated. Hand it the exact read-back when the address
+ * came through in English letters; otherwise (half in Devanagari, or "at … dot" in words) tell it to write it in
+ * English letters itself. Either way it must read it back, never ask the advisor to spell it.
+ */
+export function dictatedAddressInstruction(userText: string): string {
+  const plain = userText.match(PLAIN_ADDRESS_RE)?.[0].toLowerCase();
+  const readIt = plain
+    ? `Read it back to them now, in your own reply and in their language, keeping the letters as English letters: "${spellOut(plain)}", and ask if it is right.`
+    : `Write it in English letters yourself (a name part heard in Hindi script is its usual English spelling, like शाह → shah), then read it back to them now in your own reply, letter by letter in English letters with "dot" and "at" said as words (like "v-i-k-r-a-m dot s-h-a-h at k-e-s-t-r-e-l dot in"), and ask if it is right.`;
+  return `They dictated an email address in this message; use it in 'to', not the one on file. ${readIt} You already have the address: NEVER ask them to spell it, repeat it or give it again. Call send_email only after they say yes. (Internal: nothing is drafted yet. Don't mention it.)`;
+}
