@@ -37,6 +37,7 @@ const DESTRUCTIVE = new Set([
   "confirm_action",
   "add_client_note",
   "send_email",
+  "reply_to_email",
   "create_calendar_event",
 ]);
 

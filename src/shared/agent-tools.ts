@@ -288,6 +288,19 @@ export const AGENT_TOOLS: AgentToolSpec[] = [
     required: ["subject", "body"],
   },
   {
+    name: "reply_to_email",
+    kind: "connector",
+    connector: "gmail",
+    description:
+      "Reply in the email thread with a client, from the advisor's own Gmail. USE THIS for: reply to Rahul's email, write back to Sofia, answer Priya's mail about the floor plan. It replies to the LATEST email with that client; pass `about` with a few words when they name a topic. Write the reply body from what the advisor told you; if they did not say what to reply, ask them first. It SENDS NOTHING YET: a reply card appears on their screen and THEY tap Send. Tell them in one short line to check it and tap Send. Never say it was sent.",
+    parameters: {
+      client: { type: "string", description: "The client's name, e.g. 'Rahul Verma'." },
+      about: { type: "string", description: "A few words to pick the right email, e.g. 'floor plan'. Optional." },
+      body: { type: "string", description: "The reply text, short and professional, signed with the advisor's name." },
+    },
+    required: ["client", "body"],
+  },
+  {
     name: "create_calendar_event",
     kind: "connector",
     connector: "googlecalendar",
