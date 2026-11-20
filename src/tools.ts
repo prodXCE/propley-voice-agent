@@ -1,7 +1,7 @@
 import { llm } from "@livekit/agents";
 import { AGENT_TOOLS, type AgentToolSpec } from "./shared/agent-tools";
 import type { BrowserBridge } from "./browser-bridge.js";
-import { asksForContact, asksForNote, withoutContact } from "./contact.js";
+import { asksForContact, asksForNote, readBack, spellOut, withoutContact } from "./contact.js";
 import { isHypothetical } from "./intent.js";
 
 export interface JsonSchemaProperty {
@@ -43,6 +43,9 @@ const DESTRUCTIVE = new Set([
 
 const MAX_CALLS_PER_TURN = 4;
 
+/** The advisor's own message holds an address: "x@y.in", "x at y dot in", "x एट y डॉट in". */
+const DICTATED_ADDRESS_RE = /@|\bat\b.{1,40}\bdot\b|एट.{1,40}डॉट/i;
+
 export interface TurnBudget {
   reset(): void;
   seen: Set<string>;
@@ -61,10 +64,19 @@ export function newTurnBudget(): TurnBudget {
   return budget;
 }
 
+/** What the tool guards may know about the conversation so far. */
+export interface TurnFacts {
+  /** The agent's earlier replies in this conversation. */
+  agentSaid: string;
+  /** This turn was typed, not spoken (nothing to mishear). */
+  typed: boolean;
+}
+
 export function buildTools(
   bridge: BrowserBridge,
   lastUserText: () => string = () => "",
   budget: TurnBudget = newTurnBudget(),
+  facts: () => TurnFacts = () => ({ agentSaid: "", typed: false }),
 ) {
   const entries = AGENT_TOOLS.map((spec) => {
     const fn = llm.tool({
@@ -96,6 +108,22 @@ export function buildTools(
           return {
             error:
               "That was a question about the action, not an instruction to take it. Nothing has been changed. Answer their question in plain words instead.",
+          };
+        }
+
+        const to = String((args as { to?: unknown } | null)?.to ?? "");
+        if (spec.name === "send_email" && !to.includes("@") && DICTATED_ADDRESS_RE.test(lastUserText())) {
+          console.warn(`[guard] address dictated but not used: ${JSON.stringify(lastUserText())}`);
+          return {
+            error:
+              "They dictated an email address in this message. Use that address in 'to' (written in English letters), not the one on file, and read it back to them letter by letter before drafting. Nothing has been drafted.",
+          };
+        }
+        if (spec.name === "send_email" && to.includes("@") && !facts().typed && !readBack(to, facts().agentSaid)) {
+          console.warn(`[guard] dictated address not read back yet: ${JSON.stringify(to)}`);
+          return {
+            error:
+              `Read the address back to them now, in your own reply and in their language, keeping the letters as English letters: "${spellOut(to)}", and ask if it is right. Do not ask them to spell it. Call send_email again only after they say yes. (Internal: speech recognition often mishears spelled addresses; nothing is drafted yet. Don't mention either.)`,
           };
         }
 

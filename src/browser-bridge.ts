@@ -132,14 +132,15 @@ export class BrowserBridge {
     }
   }
 
-  async vocabulary(): Promise<string[]> {
+  /** Words speech recognition should know: client and project names, and email domains of known contacts. */
+  async vocabulary(): Promise<{ terms: string[]; domains: string[] }> {
+    const strings = (list: unknown) =>
+      Array.isArray(list) ? list.filter((t): t is string => typeof t === "string" && t.length > 0) : [];
     try {
-      const raw = await this.call("vocabulary.get", {});
-      const parsed = JSON.parse(raw) as { terms?: unknown };
-      if (!Array.isArray(parsed.terms)) return [];
-      return parsed.terms.filter((t): t is string => typeof t === "string" && t.length > 0);
+      const parsed = JSON.parse(await this.call("vocabulary.get", {})) as { terms?: unknown; domains?: unknown };
+      return { terms: strings(parsed.terms), domains: strings(parsed.domains) };
     } catch {
-      return [];
+      return { terms: [], domains: [] };
     }
   }
 

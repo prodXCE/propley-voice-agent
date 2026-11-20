@@ -210,3 +210,52 @@ function bestMatchAt(
   if (!best || best.span <= exact) return null;
   return best;
 }
+
+/** Domain endings speech recognition writes in Devanagari: "केस्ट्रेल.इन" ends in ".in". */
+const DEVANAGARI_ENDINGS: Record<string, string> = { इन: "in", कॉम: "com", कोम: "com", को: "co", ऑर्ग: "org", नेट: "net" };
+
+/** ".in" / ".co.in" / ".इन" -> ".in" / ".co.in", or null if a part isn't a known ending. */
+function ending(suffix: string): string | null {
+  const parts = suffix.toLowerCase().split(".").filter(Boolean);
+  const mapped = parts.map((p) => (/^[a-z]{2,}$/.test(p) ? p : DEVANAGARI_ENDINGS[p]));
+  return mapped.every(Boolean) ? `.${mapped.join(".")}` : null;
+}
+
+/**
+ * Inside an email address, a domain that sounds like a known one becomes the known one: speech recognition
+ * hears "kestrel.in" as "castrel.in", "castrail.in" or "केस्ट्रेल.इन", and "quva.in" as "kuva.in". Known = domains
+ * of the CRM's client addresses and the advisor's own (from the browser). Unknown domains are left alone; the
+ * read-back still guards them.
+ */
+export function snapEmailDomains(text: string, domains: string[]): string {
+  if (domains.length === 0) return text;
+  const known = domains.map((d) => d.toLowerCase());
+  return text.replace(/@([\p{L}\p{M}0-9-]+)((?:\.[\p{L}\p{M}]{2,})+)/gu, (match, label: string, suffix: string) => {
+    const end = ending(suffix);
+    if (!end) return match;
+    if (known.includes(`${label.toLowerCase()}${end}`)) return match;
+    const heardKey = sttKey(label);
+    let best: { domain: string; score: number } | null = null;
+    for (const domain of known) {
+      const [name = "", ...rest] = domain.split(".");
+      if (`.${rest.join(".")}` !== end) continue; // same ending (.in, .co.in) or no match
+      const key = sttKey(name);
+      const score = similarity(key, heardKey);
+      if (!acceptable(name, label, key, score)) continue;
+      if (!best || score > best.score) best = { domain, score };
+    }
+    return best ? `@${best.domain}` : match;
+  });
+}
+
+/**
+ * Short keys ("KB") collide easily, so they must match exactly and most letters must agree: a real but different
+ * domain ("kava" vs a known "quva") is never rewritten, or every spelled correction would be snapped back.
+ * Longer keys are distinctive enough for looser letters ("castrail" -> "kestrel"). Devanagari can't be compared
+ * letter by letter, so it needs an exact key.
+ */
+function acceptable(name: string, heard: string, key: string, score: number): boolean {
+  if (isIndic(heard)) return score === 1 && key.length >= 3;
+  if (key.length < 4) return score === 1 && similarity(name, heard.toLowerCase()) >= 0.6;
+  return score >= 0.85 && similarity(name, heard.toLowerCase()) >= 0.45;
+}

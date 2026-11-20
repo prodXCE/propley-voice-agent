@@ -8,13 +8,14 @@ import { clockLine, SYSTEM_PROMPT } from "./prompt.js";
 import { isMeaningfulUtterance } from "./utterance.js";
 import { stripSelfEcho } from "./echo.js";
 import { stripGrovel, stripPlumbing } from "./grovel.js";
-import { snapToVocabulary } from "./vocab.js";
+import { snapEmailDomains, snapToVocabulary } from "./vocab.js";
 import { buildTools, newTurnBudget, type TurnBudget } from "./tools.js";
 import {
   isDataQuestion,
   isUngrounded,
   RETRY_INSTRUCTION,
   SAFE_FALLBACK,
+  type ConversationEvidence,
 } from "./grounding.js";
 
 const RECOVERY_LINE = "Sorry, I lost that — say it again?";
@@ -152,6 +153,39 @@ function hasFreshToolOutput(chatCtx: ChatContext): boolean {
   return false;
 }
 
+/** Everything the conversation already holds, for the grounding check: see grounding.supported(). */
+function conversationEvidence(chatCtx: ChatContext): ConversationEvidence {
+  const said: string[] = [];
+  const heard: string[] = [];
+  for (const item of chatCtx.items) {
+    if (item.id === INSTRUCTIONS_ID) continue;
+    if (item.type === "message" && item.role === "user") heard.push(item.textContent ?? "");
+    else if (item.type === "message" && item.role === "assistant") said.push(item.textContent ?? "");
+    else if (item.type === "function_call_output") said.push(String(item.output ?? ""));
+  }
+  return { said: said.join("\n"), heard: heard.join("\n") };
+}
+
+/** The agent's own earlier replies, for the read-back guard on dictated addresses. */
+function agentReplies(chatCtx: ChatContext): string {
+  return chatCtx.items
+    .filter((i) => i.type === "message" && i.role === "assistant")
+    .map((i) => (i.type === "message" ? (i.textContent ?? "") : ""))
+    .join("\n");
+}
+
+/** The last few exchanges as plain lines, for a retry that cannot carry the history itself. */
+function recentTranscript(chatCtx: ChatContext, messages = 8): string {
+  const lines: string[] = [];
+  for (const item of chatCtx.items) {
+    if (item.type !== "message" || item.id === INSTRUCTIONS_ID) continue;
+    if (item.role !== "user" && item.role !== "assistant") continue;
+    const text = (item.textContent ?? "").replace(/\s+/g, " ").trim();
+    if (text) lines.push(`${item.role === "user" ? "Advisor" : "You"}: ${text.slice(0, 240)}`);
+  }
+  return lines.slice(-messages).join("\n");
+}
+
 export function lastUserText(chatCtx: ChatContext): string {
   for (let i = chatCtx.items.length - 1; i >= 0; i--) {
     const item = chatCtx.items[i];
@@ -230,7 +264,7 @@ function replaceLastUserText(chatCtx: ChatContext, text: string): void {
 export class PropleyAgent extends voice.Agent {
   private ttsLanguage: string | null = null;
   private lastContext: string | null = null;
-  private readonly turn: { text: string };
+  private readonly turn: { text: string; agentSaid: string; typed: boolean };
   private readonly budget: TurnBudget;
   private readonly language: LanguagePolicy;
 
@@ -245,13 +279,14 @@ export class PropleyAgent extends voice.Agent {
     private readonly sarvamTts: sarvam.TTS,
     private readonly vocabulary: string[] = [],
     languages: string[] = [],
+    private readonly emailDomains: string[] = [],
   ) {
-    const turn = { text: "" };
+    const turn = { text: "", agentSaid: "", typed: false };
     const budget = newTurnBudget();
     super({
       instructions: SYSTEM_PROMPT,
       allowInterruptions: true,
-      tools: buildTools(bridge, () => turn.text, budget),
+      tools: buildTools(bridge, () => turn.text, budget, () => ({ agentSaid: turn.agentSaid, typed: turn.typed })),
     });
     this.turn = turn;
     this.budget = budget;
@@ -263,6 +298,7 @@ export class PropleyAgent extends voice.Agent {
   }
 
   noteSpokenLanguage(code: string | null | undefined, transcript = ""): void {
+    this.turn.typed = false;
     const decision = this.language.observe({
       detected: code,
       transcript,
@@ -282,6 +318,7 @@ export class PropleyAgent extends voice.Agent {
    * short "ok thanks" does not flip a Hindi conversation.
    */
   noteTypedLanguage(text: string): string {
+    this.turn.typed = true;
     const typed = typedLanguage(text);
     const decision = typed
       ? this.language.force(typed)
@@ -334,7 +371,7 @@ export class PropleyAgent extends voice.Agent {
       return null;
     }
 
-    const userText = snapToVocabulary(deEchoed, this.vocabulary).trim();
+    const userText = snapEmailDomains(snapToVocabulary(deEchoed, this.vocabulary), this.emailDomains).trim();
 
     if (userText !== heard) {
       console.log(`[heard] ${JSON.stringify(heard)} -> ${JSON.stringify(userText)}`);
@@ -342,6 +379,7 @@ export class PropleyAgent extends voice.Agent {
     }
 
     this.turn.text = userText;
+    this.turn.agentSaid = agentReplies(chatCtx);
     this.budget.reset();
 
     if (!isMeaningfulUtterance(userText)) {
@@ -427,7 +465,7 @@ export class PropleyAgent extends voice.Agent {
     this.onStep(needsGrounding ? "checked" : "checked-lang");
     const grounded = await this.groundOrRetry(
       collected,
-      { chatCtx, toolCtx, modelSettings, userText, screen, hasToolOutput },
+      { chatCtx, toolCtx, modelSettings, userText, screen, hasToolOutput, evidence: conversationEvidence(chatCtx) },
     );
     if (grounded === null) {
       this.onStep("refused");
@@ -448,9 +486,10 @@ export class PropleyAgent extends voice.Agent {
       userText: string;
       screen: string | null;
       hasToolOutput: boolean;
+      evidence: ConversationEvidence;
     },
   ): Promise<Collected | null> {
-    const { chatCtx, toolCtx, modelSettings, userText, screen, hasToolOutput } = ctx;
+    const { chatCtx, toolCtx, modelSettings, userText, screen, hasToolOutput, evidence } = ctx;
 
     if (
       !isUngrounded({
@@ -459,6 +498,7 @@ export class PropleyAgent extends voice.Agent {
         calledTool: collected.calledTool,
         hasToolOutput,
         screen,
+        evidence,
       })
     ) {
       return collected;
@@ -493,6 +533,7 @@ export class PropleyAgent extends voice.Agent {
         calledTool: retried.calledTool,
         hasToolOutput,
         screen,
+        evidence,
       })
     ) {
       console.warn("[grounding] retry still ungrounded — refusing to guess");
@@ -541,6 +582,8 @@ export class PropleyAgent extends voice.Agent {
         `The advisor spoke ${name}. Every single word of your reply must be in ${name}, in ${name}'s own script. Not one word of any other language.`,
         `Do not apologise. Do not mention the language. Do not repeat this instruction — it is not something the advisor said.`,
         this.lastContext ?? SYSTEM_PROMPT,
+        // This retry drops the history (so the old language can't carry over); keep its facts as plain lines.
+        `The conversation so far, for its facts only (names, addresses, times, what was agreed), not its language:\n${recentTranscript(chatCtx)}`,
       ].join("\n\n"),
     );
 

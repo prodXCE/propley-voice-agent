@@ -27,3 +27,32 @@ export function withoutContact(result: unknown): unknown {
   }
   return out;
 }
+
+/** "r-o-h-a-n dot m, at kestrel dot in" / "R O H A N.M@kestrel.in" -> "rohan.m@kestrel.in" (spoken or typed). */
+export function spokenAddress(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/\s+(dot|डॉट)\s+/g, ".")
+    .replace(/\s+(at|एट)\s+/g, "@")
+    .replace(/[\s,\-–—'"]/g, "");
+}
+
+/**
+ * Whether the agent already read this address back in the conversation. Spelled addresses are what speech
+ * recognition gets wrong most ("q u v a" -> "kuva"), so a dictated address must be read back before it is used.
+ */
+export function readBack(address: string, agentSaid: string): boolean {
+  const want = spokenAddress(address);
+  return want.includes("@") && spokenAddress(agentSaid).includes(want);
+}
+
+const WELL_KNOWN_DOMAINS = new Set(["gmail", "yahoo", "outlook", "hotmail", "rediffmail", "icloud"]);
+
+/** "rohan.m@kestrel.in" -> "r-o-h-a-n dot m at k-e-s-t-r-e-l dot in": domains that sound alike get spelled too. */
+export function spellOut(address: string): string {
+  const [local = "", domain = ""] = address.toLowerCase().split("@");
+  const letters = (part: string) => part.split(".").map((w) => w.split("").join("-")).join(" dot ");
+  const [name = "", ...rest] = domain.split(".");
+  const host = WELL_KNOWN_DOMAINS.has(name) ? name : name.split("").join("-");
+  return `${letters(local)} at ${[host, ...rest].join(" dot ")}`;
+}
