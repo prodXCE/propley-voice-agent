@@ -36,6 +36,8 @@ const DESTRUCTIVE = new Set([
   "set_deal_stage",
   "confirm_action",
   "add_client_note",
+  "send_email",
+  "create_calendar_event",
 ]);
 
 const MAX_CALLS_PER_TURN = 4;
